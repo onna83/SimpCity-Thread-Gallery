@@ -39,7 +39,6 @@
     perPage: 60,
     theme: 'dark',
     filtersCollapsed: false,
-    activityCollapsed: false,
     layoutMode: 'masonry',
     cardScale: 100,
     downloadConcurrency: 2,
@@ -127,7 +126,6 @@
     perPage: [40, 60, 100].includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : 60,
     theme: THEME_MODES.includes(savedSettings.theme) ? savedSettings.theme : DEFAULT_SETTINGS.theme,
     filtersCollapsed: Boolean(savedSettings.filtersCollapsed),
-    activityCollapsed: Boolean(savedSettings.activityCollapsed),
     layoutMode: ['masonry', 'grid', 'feed'].includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
     cardScale: Number.isFinite(Number(savedSettings.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(savedSettings.cardScale) / 5) * 5)) : 100,
     downloadConcurrency: [1, 2, 3, 4].includes(Number(savedSettings.downloadConcurrency)) ? Number(savedSettings.downloadConcurrency) : 2,
@@ -570,7 +568,6 @@
         perPage: state.perPage,
         theme: state.theme,
         filtersCollapsed: state.filtersCollapsed,
-        activityCollapsed: state.activityCollapsed,
         layoutMode: state.layoutMode,
         cardScale: state.cardScale,
         downloadConcurrency: state.downloadConcurrency,
@@ -621,7 +618,6 @@
     app.style.setProperty('--scg-grid-compact-height', `${Math.round(312 * scale)}px`);
     app.classList.toggle('compact', state.compact);
     app.classList.toggle('filters-collapsed', state.filtersCollapsed);
-    app.classList.toggle('activity-collapsed', state.activityCollapsed);
     const toast = document.getElementById('scg-gallery-toast');
     if (toast) toast.dataset.theme = state.theme;
     const launch = document.getElementById('scg-launch');
@@ -643,16 +639,10 @@
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     });
-    const activityToggle = app.querySelector('[data-action="activity-toggle"]');
-    if (activityToggle) {
-      setIconOnlyButton(activityToggle, 'chevron', state.activityCollapsed ? 'Expand activity bar' : 'Collapse activity bar');
-      activityToggle.setAttribute('aria-expanded', String(!state.activityCollapsed));
-    }
     refreshRefineTrigger();
     const themeSelect = app.querySelector('[data-setting-theme]');
     const densitySelect = app.querySelector('[data-setting-density]');
     const filterCheck = app.querySelector('[data-setting-filters-collapsed]');
-    const activityCheck = app.querySelector('[data-setting-activity-collapsed]');
     const layoutSelect = app.querySelector('[data-setting-layout]');
     const sizeSliders = app.querySelectorAll('[data-card-scale]');
     const sizeLabels = app.querySelectorAll('[data-card-scale-value]');
@@ -665,7 +655,6 @@
     });
     sizeLabels.forEach(label => { label.textContent = state.layoutMode === 'feed' ? 'Feed' : `${cardScale}%`; });
     if (filterCheck) filterCheck.checked = state.filtersCollapsed;
-    if (activityCheck) activityCheck.checked = state.activityCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
     refreshThreadHeader();
   }
@@ -1394,7 +1383,6 @@
       perPage: [40, 60, 100].includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
       theme: THEME_MODES.includes(input.theme) ? input.theme : DEFAULT_SETTINGS.theme,
       filtersCollapsed: Boolean(input.filtersCollapsed),
-      activityCollapsed: Boolean(input.activityCollapsed),
       layoutMode: LAYOUT_MODES.includes(input.layoutMode) ? input.layoutMode : DEFAULT_SETTINGS.layoutMode,
       cardScale: Number.isFinite(Number(input.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(input.cardScale) / 5) * 5)) : DEFAULT_SETTINGS.cardScale,
       downloadConcurrency: [1, 2, 3, 4].includes(Number(input.downloadConcurrency)) ? Number(input.downloadConcurrency) : DEFAULT_SETTINGS.downloadConcurrency,
@@ -1416,7 +1404,6 @@
       perPage: state.perPage,
       theme: state.theme,
       filtersCollapsed: state.filtersCollapsed,
-      activityCollapsed: state.activityCollapsed,
       layoutMode: state.layoutMode,
       cardScale: state.cardScale,
       downloadConcurrency: state.downloadConcurrency,
@@ -1494,7 +1481,6 @@
     const themeSelect = panel.querySelector('[data-setting-theme]');
     const densitySelect = panel.querySelector('[data-setting-density]');
     const filtersCollapsed = panel.querySelector('[data-setting-filters-collapsed]');
-    const activityCollapsed = panel.querySelector('[data-setting-activity-collapsed]');
     const layoutSelect = panel.querySelector('[data-setting-layout]');
     const cardScale = panel.querySelector('[data-card-scale]');
     const archiveLayout = panel.querySelector('[data-setting-archive-layout]');
@@ -1507,7 +1493,6 @@
     if (themeSelect) themeSelect.value = state.theme;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     if (filtersCollapsed) filtersCollapsed.checked = state.filtersCollapsed;
-    if (activityCollapsed) activityCollapsed.checked = state.activityCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
     if (cardScale) cardScale.value = String(state.cardScale);
     if (archiveLayout) archiveLayout.value = state.archiveLayout;
@@ -4194,17 +4179,26 @@
 
     /* ---- 13. The dock (status / selection / downloads) --------- */
     #${APP_ID} .scg-activitybar{
-      position:absolute;z-index:30;left:50%;bottom:14px;transform:translateX(-50%);
-      display:flex;align-items:center;gap:10px;flex-wrap:nowrap;
-      width:min(1220px,calc(100% - 28px));
-      padding:8px 10px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-xl);
-      background:color-mix(in srgb,var(--scg-surface) 92%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(20px) saturate(130%);
-      transition:width .2s ease,padding .2s ease;
+      position:absolute;z-index:30;left:50%;bottom:18px;transform:translateX(-50%);
+      display:flex;align-items:center;gap:12px;flex-wrap:nowrap;
+      width:min(1240px,calc(100% - 36px));min-height:64px;
+      padding:11px 14px;
+      border:1px solid color-mix(in srgb,#ffffff 18%,var(--scg-line-strong));border-radius:26px;
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 78%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 64%,transparent));
+      box-shadow:0 20px 54px #00000070,
+        inset 0 1px 0 color-mix(in srgb,#ffffff 16%,transparent),
+        inset 0 -1px 0 color-mix(in srgb,#000000 18%,transparent);
+      backdrop-filter:blur(28px) saturate(165%);
+      -webkit-backdrop-filter:blur(28px) saturate(165%);
+      isolation:isolate;
     }
-    #${APP_ID}.activity-collapsed .scg-activitybar{width:min(760px,calc(100% - 28px));padding:5px 8px}
+    #${APP_ID} .scg-activitybar:before{
+      content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
+      background:linear-gradient(115deg,color-mix(in srgb,#ffffff 10%,transparent),transparent 38%,color-mix(in srgb,var(--scg-accent) 7%,transparent));
+    }
+    #${APP_ID} .scg-activitybar>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-activity-state{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 260px;padding-left:4px}
     #${APP_ID} .scg-activity-state>i{
@@ -4229,13 +4223,11 @@
       overflow:hidden;color:var(--scg-muted);font-size:11px;
       text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;
     }
-    #${APP_ID}.activity-collapsed .scg-activity-state span{display:none}
-
     #${APP_ID} .scg-activitybar button{
       display:inline-flex;align-items:center;justify-content:center;gap:7px;
-      min-height:34px;padding:7px 10px;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
-      background:var(--scg-surface-2);color:var(--scg-text-soft);
+      min-height:40px;padding:9px 12px;
+      border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
+      background:color-mix(in srgb,var(--scg-surface-2) 72%,transparent);color:var(--scg-text-soft);
       font-size:12px;font-weight:550;cursor:pointer;white-space:nowrap;
       transition:background .14s,border-color .14s,color .14s;
     }
@@ -4290,9 +4282,9 @@
     #${APP_ID}.selecting.downloading .scg-progress{display:flex;min-width:150px;max-width:320px;flex:1 1 220px}
     #${APP_ID} .scg-progress-summary{
       display:flex !important;align-items:center;gap:10px;width:100%;min-width:0;
-      min-height:34px;padding:6px 11px !important;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
-      background:var(--scg-surface-2);color:var(--scg-text-soft);cursor:pointer;
+      min-height:40px;padding:8px 12px !important;
+      border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
+      background:color-mix(in srgb,var(--scg-surface-2) 72%,transparent);color:var(--scg-text-soft);cursor:pointer;
     }
     #${APP_ID} .scg-progress-track{
       position:relative;display:block;height:6px;flex:1;min-width:70px;overflow:hidden;
@@ -4308,14 +4300,6 @@
       color:var(--scg-muted);font-size:11.5px;text-align:right;
       text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;
     }
-    #${APP_ID}.activity-collapsed .scg-progress{min-width:120px;max-width:260px;flex:0 1 260px}
-    #${APP_ID}.activity-collapsed .scg-progress-track{display:none}
-
-    #${APP_ID} .scg-activity-toggle{flex:none;min-width:34px;padding:7px !important}
-    #${APP_ID} .scg-activity-toggle span{display:none}
-    #${APP_ID} .scg-activity-toggle .scg-icon{transition:transform .18s ease}
-    #${APP_ID}.activity-collapsed .scg-activity-toggle .scg-icon{transform:rotate(180deg)}
-
     /* Download queue popover */
     #${APP_ID} .scg-download-popover{
       display:none;position:absolute;z-index:320;right:0;bottom:calc(100% + 10px);
@@ -4846,9 +4830,9 @@
       #${APP_ID} .scg-filter-panel{padding:0 10px 9px;gap:8px}
       #${APP_ID} .scg-viewbar{flex-basis:100%;justify-content:flex-start}
       #${APP_ID} .scg-view-summary{margin-right:auto}
-      #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 118px}
+      #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 136px}
       #${APP_ID} .scg-activitybar{width:calc(100% - 20px);bottom:10px;flex-wrap:wrap}
-      #${APP_ID} .scg-top{right:20px;bottom:104px}
+      #${APP_ID} .scg-top{right:20px;bottom:122px}
       #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:3 var(--scg-masonry-width,280px)}
       #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:4 var(--scg-masonry-compact-width,195px)}
       #${APP_ID} .scg-settings-grid{grid-template-columns:1fr}
@@ -4900,8 +4884,8 @@
       }
       #${APP_ID} .scg-refinebar{grid-template-columns:1fr}
       #${APP_ID} .scg-menu{position:fixed;right:8px;left:auto;width:min(280px,calc(100vw - 16px))}
-      #${APP_ID} .scg-scroll{inset:8px 8px 0;padding:12px 10px 132px;border-radius:var(--scg-r-md) var(--scg-r-md) 0 0}
-      #${APP_ID} .scg-top{right:14px;bottom:118px;padding:8px 12px}
+      #${APP_ID} .scg-scroll{inset:8px 8px 0;padding:12px 10px 160px;border-radius:var(--scg-r-md) var(--scg-r-md) 0 0}
+      #${APP_ID} .scg-top{right:14px;bottom:146px;padding:8px 12px}
       #${APP_ID} .scg-top>span{display:none}
       #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:2 var(--scg-masonry-width,280px);column-gap:8px}
       #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:2 var(--scg-masonry-compact-width,195px);column-gap:8px}
@@ -4926,7 +4910,7 @@
       #${APP_ID}[data-layout="feed"] .scg-skeleton{display:block;height:auto}
       #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:182px}
       #${APP_ID} .scg-badge span{display:none}
-      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);bottom:8px;gap:7px;padding:7px 8px;border-radius:var(--scg-r-lg)}
+      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:22px}
       #${APP_ID} .scg-activity-state{flex:1 1 100%}
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
       #${APP_ID} .scg-progress-text{max-width:130px}
@@ -5145,7 +5129,6 @@
             <div class="scg-download-jobs"></div>
           </aside>
         </div>
-        <button class="scg-activity-toggle scg-tip-up scg-tip-end" data-action="activity-toggle" data-tooltip="Collapse activity bar" aria-expanded="true" aria-label="Collapse activity bar">${iconWell('chevron')}<span>Collapse activity</span></button>
       </footer>
       <button class="scg-top scg-tip-up scg-tip-end" data-tooltip="Back to the top of the gallery">${iconWell('up')}<span>Top</span></button>
     </div>
@@ -5154,7 +5137,7 @@
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered panel state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-activity-collapsed><span>Keep the activity bar compact</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -5265,9 +5248,6 @@
     const current = Math.max(0, THEME_MODES.indexOf(state.theme));
     commitState({ theme: THEME_MODES[(current + 1) % THEME_MODES.length] }, { persist: true, shellOnly: true });
   };
-  app.querySelector('[data-action="activity-toggle"]').onclick = () => {
-    commitState({ activityCollapsed: !state.activityCollapsed }, { persist: true, shellOnly: true });
-  };
   const overflowTrigger = app.querySelector('[data-action="overflow"]');
   const overflowMenu = app.querySelector('.scg-menu');
   const refineTrigger = app.querySelector('[data-action="refine-toggle"]');
@@ -5303,9 +5283,6 @@
   };
   app.querySelector('[data-setting-filters-collapsed]').onchange = event => {
     commitState({ filtersCollapsed: event.target.checked }, { persist: true, shellOnly: true });
-  };
-  app.querySelector('[data-setting-activity-collapsed]').onchange = event => {
-    commitState({ activityCollapsed: event.target.checked }, { persist: true, shellOnly: true });
   };
   app.querySelector('[data-setting-archive-layout]').onchange = event => {
     commitState({ archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(event.target.value) ? event.target.value : DEFAULT_SETTINGS.archiveLayout }, { persist: true, shellOnly: true });

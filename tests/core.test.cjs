@@ -418,6 +418,14 @@ test('dock preserves active queue status and cancellation across selection state
   assert.match(source, /state\.downloading \? 'Cancel ZIP queue'/);
 });
 
+test('dock is a persistent glass surface without a collapse mode', () => {
+  assert.doesNotMatch(source, /activityCollapsed|activity-collapsed|activity-toggle|setting-activity-collapsed/);
+  assert.match(source, /\.scg-activitybar\{[\s\S]*?min-height:64px/);
+  assert.match(source, /backdrop-filter:blur\(28px\) saturate\(165%\)/);
+  assert.match(source, /-webkit-backdrop-filter:blur\(28px\) saturate\(165%\)/);
+  assert.match(source, /\.scg-activitybar:before\{/);
+});
+
 test('interface polish retains responsive, native, and launcher safeguards', () => {
   assert.match(source, /#\$\{APP_ID\} select option\{background:var\(--scg-surface\);color:var\(--scg-text\)\}/);
   assert.match(source, /@media\(max-height:620px\)/);

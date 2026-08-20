@@ -14,6 +14,7 @@ Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or pu
 - Added reply-level downloadable-media selection with checked, unchecked, and native indeterminate states across collapsed groups and result-page chunks.
 - Made reply-level selection respect the active All, Images, or Videos view, so selecting a reply from Images no longer includes its videos.
 - Kept selection and active-download dock states usable together, including cancellation after selection mode is closed.
+- Removed the dock's fragile compact/collapse state and replaced it with a taller translucent glass dock that keeps its status and selection controls at full usable width.
 - Repaired corrupted separators, dimensions, ellipses, and keyboard-help glyphs, and strengthened the full-thread action's red danger treatment.
 - Fixed long scan-warning tooltip wrapping and made the download-queue Close action dismiss reliably while returning focus to its trigger.
 - Made Clear history remove persisted SAVED/LEGACY markers and completed queue rows, while guarding against active-download races.
