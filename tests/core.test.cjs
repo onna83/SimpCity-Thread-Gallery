@@ -166,3 +166,57 @@ test('full-thread scanning uses a custom warning and cancellable HTML-only reque
   assert.match(scanSource, /state\.scanController\?\.abort\(\)/);
   assert.doesNotMatch(scanSource, /resolveForDisplay|fetchMediaBlob|iframeHtml/);
 });
+
+test('collapsed reply state toggles by stable reply key', () => {
+  const state = { collapsedReplies: new Set() };
+  const { replyKey, setReplyCollapsed } = evaluateSlice(
+    'function replyKey',
+    'function buildViewPages',
+    ['replyKey', 'setReplyCollapsed'],
+    { state },
+  );
+  const item = { pageNumber: 3, postId: 'post-42', postIndex: 9 };
+  const key = replyKey(item);
+
+  assert.equal(key, '3|post-42');
+  assert.equal(setReplyCollapsed(key, true), true);
+  assert.equal(state.collapsedReplies.has(key), true);
+  assert.equal(setReplyCollapsed(key, true), false);
+  assert.equal(setReplyCollapsed(key, false), true);
+  assert.equal(state.collapsedReplies.has(key), false);
+});
+
+test('Collapse All and Expand All affect every reply in the filtered result set', () => {
+  const state = { collapsedReplies: new Set() };
+  const { setReplyGroupsCollapsed } = evaluateSlice(
+    'function replyKey',
+    'function buildViewPages',
+    ['setReplyGroupsCollapsed'],
+    { state },
+  );
+  const items = [
+    { pageNumber: 1, postId: 'a' },
+    { pageNumber: 1, postId: 'a' },
+    { pageNumber: 2, postId: 'b' },
+  ];
+
+  assert.equal(setReplyGroupsCollapsed(items, true), true);
+  assert.deepEqual([...state.collapsedReplies].sort(), ['1|a', '2|b']);
+  assert.equal(setReplyGroupsCollapsed(items, false), true);
+  assert.deepEqual([...state.collapsedReplies], []);
+});
+
+test('collapsed groups omit cards, expose aria-expanded, and reset with the dataset', () => {
+  const groupsStart = source.indexOf('function replyGroupsMarkup');
+  const groupsEnd = source.indexOf('function updateViewPager', groupsStart);
+  const groupsSource = source.slice(groupsStart, groupsEnd);
+  const resetStart = source.indexOf('function resetDatasetState');
+  const resetEnd = source.indexOf('function updateScanStatus', resetStart);
+  const resetSource = source.slice(resetStart, resetEnd);
+
+  assert.match(groupsSource, /aria-expanded="\$\{String\(!collapsed\)\}"/);
+  assert.match(groupsSource, /collapsed \? '' : group\.entries\.map/);
+  assert.match(groupsSource, /iconWell\('chevron'\)/);
+  assert.match(resetSource, /state\.collapsedReplies\.clear\(\)/);
+  assert.doesNotMatch(source.slice(source.indexOf('function persistSettings'), source.indexOf('function refreshThreadHeader')), /collapsedReplies/);
+});

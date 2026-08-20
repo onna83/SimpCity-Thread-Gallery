@@ -147,6 +147,7 @@
     sourcePage: 1,
     selectionMode: false,
     selected: new Set(),
+    collapsedReplies: new Set(),
     scanning: false,
     cancelScan: false,
     scannedPages: 0,
@@ -2312,6 +2313,22 @@
     return `${item.pageNumber || 1}|${item.postId || item.postUrl || item.postIndex || 0}`;
   }
 
+  function setReplyCollapsed(key, collapsed) {
+    const normalizedKey = String(key || '');
+    if (!normalizedKey) return false;
+    const changed = collapsed ? !state.collapsedReplies.has(normalizedKey) : state.collapsedReplies.has(normalizedKey);
+    if (collapsed) state.collapsedReplies.add(normalizedKey);
+    else state.collapsedReplies.delete(normalizedKey);
+    return changed;
+  }
+
+  function setReplyGroupsCollapsed(items, collapsed) {
+    const keys = new Set(items.map(replyKey));
+    let changed = false;
+    keys.forEach(key => { if (setReplyCollapsed(key, collapsed)) changed = true; });
+    return changed;
+  }
+
   function buildViewPages(items) {
     const limit = state.perPage;
     if (!items.length) return [[]];
@@ -2474,10 +2491,12 @@
       if (!groups.has(key)) groups.set(key, { first: item, entries: [] });
       groups.get(key).entries.push({ item, index });
     });
-    return [...groups.values()].map(group => {
+    return [...groups.entries()].map(([key, group]) => {
       const first = group.first;
       const replyLabel = first.postNumber ? `Reply #${first.postNumber}` : `Reply ${Number(first.postIndex || 0) + 1}`;
-      return `<section class="scg-reply-group"><header><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
+      const collapsed = state.collapsedReplies.has(key);
+      const toggleLabel = collapsed ? `Expand ${replyLabel}` : `Collapse ${replyLabel}`;
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header><button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
     }).join('');
   }
 
@@ -2520,6 +2539,7 @@
     const c = counts();
     app.classList.toggle('scanning', state.scanning);
     app.classList.toggle('selecting', state.selectionMode);
+    app.classList.toggle('grouped-replies', state.groupBy === 'reply');
     applyShellState();
     app.querySelectorAll('[data-filter], [data-search], [data-card-scale], .scg-refinebar button, .scg-refinebar select, .scg-viewbar button, .scg-viewbar select, [data-action="selection-mode"], [data-action="page"], [data-action="load-source-page"]').forEach(control => {
       control.disabled = state.scanning;
@@ -2973,6 +2993,7 @@
   function resetDatasetState() {
     invalidateVisibleItems({ dataset: true, selection: true });
     state.selected.clear();
+    state.collapsedReplies.clear();
     state.selectionMode = false;
     state.selectedOnly = false;
     state.authorFilter = 'all';
@@ -3641,6 +3662,15 @@
       color:var(--scg-muted);font-size:11.5px;font-variant-numeric:tabular-nums;
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     }
+    #${APP_ID} .scg-reply-group-actions{display:none;align-items:center;gap:4px}
+    #${APP_ID}.grouped-replies .scg-reply-group-actions{display:inline-flex}
+    #${APP_ID} .scg-reply-group-actions button{
+      display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:5px 8px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface-2);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID} .scg-reply-group-actions button:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-reply-group-actions [data-action="expand-all"] .scg-icon{transform:rotate(180deg)}
     #${APP_ID} .scg-viewbar label{
       display:inline-flex;align-items:center;gap:7px;flex:none;
       color:var(--scg-muted);font-size:10.5px;font-weight:650;
@@ -4368,6 +4398,16 @@
       display:flex;align-items:center;justify-content:center;gap:8px;
       margin:-8px 0 18px;color:var(--scg-text-soft);font-size:12px;cursor:pointer;
     }
+    #${APP_ID} .scg-reply-toggle{
+      display:inline-flex;align-items:center;gap:5px;flex:none;
+      min-height:30px;padding:5px 8px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID} .scg-reply-toggle:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-reply-toggle .scg-icon{transition:transform .18s ease}
+    #${APP_ID} .scg-reply-toggle[aria-expanded="false"] .scg-icon{transform:rotate(-90deg)}
+    #${APP_ID} .scg-reply-group.collapsed>header{border-bottom:0}
+    #${APP_ID} .scg-collapsed-status{color:var(--scg-accent);font-size:10px;font-style:normal;font-weight:650;text-transform:uppercase;letter-spacing:.06em}
     #${APP_ID} .scg-confirm-preference[hidden]{display:none}
     #${APP_ID} .scg-confirm-preference input{accent-color:var(--scg-accent)}
     #${APP_ID} .scg-confirm-dialog>div:last-child{display:flex;justify-content:center;gap:9px}
@@ -4929,6 +4969,10 @@
         </div>
         <div class="scg-viewbar">
           <span class="scg-view-summary" role="status" aria-live="polite">0 matched</span>
+          <span class="scg-reply-group-actions" role="group" aria-label="Reply group visibility">
+            <button data-action="collapse-all" data-tooltip="Collapse all reply groups in the filtered results">${iconWell('chevron')}<span>Collapse All</span></button>
+            <button data-action="expand-all" data-tooltip="Expand all reply groups in the filtered results">${iconWell('chevron')}<span>Expand All</span></button>
+          </span>
           <div class="scg-layout-switcher" role="group" aria-label="Gallery layout">
             <button data-layout-mode="masonry" data-tooltip="Masonry layout (L)" aria-pressed="true">${iconWell('masonry')}<span>Masonry</span></button>
             <button data-layout-mode="grid" data-tooltip="Uniform grid layout (L)" aria-pressed="false">${iconWell('grid')}<span>Grid</span></button>
@@ -5066,6 +5110,12 @@
   app.querySelector('[data-host-filter]').onchange = event => commitState({ hostFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-group-by]').onchange = event => commitState({ groupBy: event.target.value, viewPage: 1 }, { persist: true });
   app.querySelector('[data-selected-only]').onclick = () => commitState({ selectedOnly: !state.selectedOnly, viewPage: 1 });
+  app.querySelector('[data-action="collapse-all"]').onclick = () => {
+    if (setReplyGroupsCollapsed(visibleItems(), true)) render();
+  };
+  app.querySelector('[data-action="expand-all"]').onclick = () => {
+    if (setReplyGroupsCollapsed(visibleItems(), false)) render();
+  };
   app.querySelector('[data-action="reset-filters"]').onclick = () => {
     app.querySelector('[data-search]').value = '';
     commitState({
@@ -5234,6 +5284,12 @@
   scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
   app.querySelector('.scg-grid').onclick = event => {
     const items = state.renderedItems;
+    const replyToggle = event.target.closest('[data-reply-toggle]');
+    if (replyToggle) {
+      setReplyCollapsed(replyToggle.dataset.replyToggle, replyToggle.getAttribute('aria-expanded') === 'true');
+      render();
+      return;
+    }
     const selection = event.target.closest('[data-select]');
     if (selection) {
       const item = items[Number(selection.dataset.select)];
