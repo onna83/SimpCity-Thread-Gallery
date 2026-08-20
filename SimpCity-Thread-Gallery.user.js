@@ -3440,7 +3440,7 @@
       padding:6px 9px;border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-sm);
       background:var(--scg-surface-3);color:var(--scg-text);
       box-shadow:var(--scg-shadow-sm);
-      font-size:11px;font-weight:550;line-height:1.3;pointer-events:none;
+      font-size:11px;font-weight:550;line-height:1.3;white-space:normal;overflow-wrap:anywhere;pointer-events:none;
     }
     #${APP_ID} .scg-tip-end[data-tooltip]:hover:after,
     #${APP_ID} .scg-tip-end[data-tooltip]:focus-visible:after{left:auto;right:0;transform:none}
@@ -4306,8 +4306,7 @@
       background:var(--scg-surface);color:var(--scg-text);
       box-shadow:var(--scg-shadow);
     }
-    #${APP_ID} .scg-progress.expanded .scg-download-popover,
-    #${APP_ID} .scg-progress:focus-within .scg-download-popover{display:block}
+    #${APP_ID} .scg-progress.expanded .scg-download-popover{display:block}
     #${APP_ID} .scg-download-popover>header{
       display:flex;align-items:center;justify-content:space-between;gap:12px;
       padding:11px 13px;
@@ -5040,7 +5039,7 @@
           <div class="scg-scan-actions" role="group" aria-label="Scan sources">
             <button data-action="page" data-tooltip="Index the page you are on">${iconWell('page')}<span>This page</span></button>
             <span class="scg-source-page"><select data-source-page aria-label="Thread page to load"></select><button data-action="load-source-page" data-tooltip="Load the selected thread page" aria-label="Load the selected thread page">${iconWell('download')}</button></span>
-            <button class="scg-scan-thread-danger" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
+            <button class="scg-scan-thread-danger scg-tip-end" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
           </div>
           <span class="scg-scan-warning" id="scg-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
         </nav>
@@ -5346,6 +5345,7 @@
     event.stopPropagation();
     state.downloadDetailsOpen = false;
     updateDownloadUi();
+    app.querySelector('[data-action="download-details"]')?.focus({ preventScroll: true });
   };
   app.querySelector('[data-action="clear-download-history"]').onclick = async event => {
     event.stopPropagation();

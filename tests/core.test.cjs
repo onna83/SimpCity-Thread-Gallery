@@ -345,3 +345,10 @@ test('display labels are free of known mojibake sequences', () => {
   assert.match(source, /normalized\.width\.toLocaleString\(\)\} × /);
   assert.match(source, /scg-scan-thread-danger\{[\s\S]*?background:#8f2034/);
 });
+
+test('long tooltips wrap and the download queue Close action can dismiss the popover', () => {
+  assert.match(source, /white-space:normal;overflow-wrap:anywhere;pointer-events:none/);
+  assert.match(source, /scg-scan-thread-danger scg-tip-end/);
+  assert.doesNotMatch(source, /\.scg-progress:focus-within \.scg-download-popover/);
+  assert.match(source, /\[data-action="download-details"\]\'\)\?\.focus\(\{ preventScroll: true \}\)/);
+});
