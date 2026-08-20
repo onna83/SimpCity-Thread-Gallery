@@ -1574,6 +1574,19 @@
     notify(clearHistory ? 'Preferences and download history reset.' : 'Preferences reset.');
   }
 
+  function clearDownloadHistory() {
+    if (state.downloading) return false;
+    state.downloadHistory = {};
+    storage.remove(DOWNLOAD_HISTORY_KEY);
+    state.downloadJobs = [];
+    state.downloadProgress = blankDownloadProgress();
+    scheduleDownloadUi.dirtyJobs.clear();
+    updateDownloadedIndicators();
+    updateDownloadUi();
+    refreshSettingsPanel();
+    return true;
+  }
+
   function clearDiagnostics() {
     state.diagnostics.resolverFailures = [];
     state.diagnostics.downloadFailures = [];
@@ -5355,10 +5368,9 @@
   };
   app.querySelector('[data-action="clear-download-history"]').onclick = async event => {
     event.stopPropagation();
-    if (!await confirmAction({ title: 'Clear download history?', message: 'This removes SAVED markers only. Existing files will stay in your Downloads folder.', confirmLabel: 'Clear history', danger: true })) return;
-    state.downloadHistory = {};
-    persistDownloadHistory();
-    updateDownloadedIndicators();
+    if (state.downloading) return notify('Finish or cancel the active download before clearing its history.', 5200);
+    if (!await confirmAction({ title: 'Clear download history?', message: 'This removes SAVED and LEGACY markers plus completed queue entries. Existing files will stay in your Downloads folder.', confirmLabel: 'Clear history', danger: true })) return;
+    if (!clearDownloadHistory()) return;
     notify('Download history cleared. Existing files were not deleted.');
   };
   const scrollArea = app.querySelector('.scg-scroll');

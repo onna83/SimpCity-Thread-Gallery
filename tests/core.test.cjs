@@ -354,6 +354,53 @@ test('exit selection clears every selection without canceling an active download
   assert.equal(state.cancelDownload, false);
 });
 
+test('clearing download history removes persisted markers and completed queue rows', () => {
+  const state = {
+    downloading: false,
+    downloadHistory: { saved: { verified: true } },
+    downloadJobs: [{ id: 1, status: 'saved' }],
+    downloadProgress: { total: 1 },
+  };
+  const removed = [];
+  const dirtyJobs = new Set([1]);
+  let indicatorUpdates = 0;
+  let queueUpdates = 0;
+  let settingsUpdates = 0;
+  const { clearDownloadHistory } = evaluateSlice(
+    'function clearDownloadHistory',
+    'function clearDiagnostics',
+    ['clearDownloadHistory'],
+    {
+      state,
+      DOWNLOAD_HISTORY_KEY: 'history-key',
+      storage: { remove: key => removed.push(key) },
+      blankDownloadProgress: () => ({ total: 0 }),
+      scheduleDownloadUi: { dirtyJobs },
+      updateDownloadedIndicators: () => { indicatorUpdates++; },
+      updateDownloadUi: () => { queueUpdates++; },
+      refreshSettingsPanel: () => { settingsUpdates++; },
+    },
+  );
+
+  assert.equal(clearDownloadHistory(), true);
+  assert.equal(Object.keys(state.downloadHistory).length, 0);
+  assert.equal(state.downloadJobs.length, 0);
+  assert.equal(state.downloadProgress.total, 0);
+  assert.deepEqual(removed, ['history-key']);
+  assert.equal(dirtyJobs.size, 0);
+  assert.equal(indicatorUpdates, 1);
+  assert.equal(queueUpdates, 1);
+  assert.equal(settingsUpdates, 1);
+
+  state.downloading = true;
+  state.downloadHistory = { active: { verified: true } };
+  state.downloadJobs = [{ id: 2, status: 'downloading' }];
+  assert.equal(clearDownloadHistory(), false);
+  assert.equal(Object.keys(state.downloadHistory).length, 1);
+  assert.equal(state.downloadJobs.length, 1);
+  assert.deepEqual(removed, ['history-key']);
+});
+
 test('reply checkbox exposes native indeterminate state after rendering', () => {
   assert.match(source, /input\.indeterminate = replySelection\.indeterminate/);
   assert.match(source, /aria-checked.*'mixed'/);
