@@ -172,6 +172,16 @@
     },
   };
 
+  let datasetRevision = 0;
+  let selectionRevision = 0;
+  let visibleItemsCache = { signature: '', items: [] };
+
+  function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
+    if (dataset) datasetRevision++;
+    if (selection) selectionRevision++;
+    visibleItemsCache = { signature: '', items: [] };
+  }
+
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
@@ -260,7 +270,7 @@
     };
     bucket.push(entry);
     if (bucket.length > 100) bucket.splice(0, bucket.length - 100);
-    refreshSettingsPanel();
+    if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
   }
 
   const absoluteUrl = (value, base = location.href) => {
@@ -723,7 +733,7 @@
     if (options.persist) persistSettings();
     if (options.shellOnly) {
       applyShellState();
-      refreshSettingsPanel();
+      if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
     } else if (options.render !== false) render();
     else {
       updateSelectionUi();
@@ -1134,12 +1144,14 @@
       error: '',
     };
     state.downloadJobs.push(job);
+    scheduleDownloadUi.dirtyJobs.add(job.id);
     return job;
   }
 
   function setDownloadJob(job, changes) {
     if (!job) return;
     Object.assign(job, changes);
+    scheduleDownloadUi.dirtyJobs.add(job.id);
     scheduleDownloadUi();
   }
 
@@ -1148,8 +1160,9 @@
     scheduleDownloadUi.timer = setTimeout(() => {
       scheduleDownloadUi.timer = 0;
       updateDownloadUi();
-    }, 180);
+    }, 250);
   }
+  scheduleDownloadUi.dirtyJobs = new Set();
 
   function updateDownloadedIndicators() {
     const app = document.getElementById(APP_ID);
@@ -1302,8 +1315,10 @@
 
   function setSelected(item, selected) {
     if (!isMediaItem(item)) return;
+    const changed = selected ? !state.selected.has(item.selectionKey) : state.selected.has(item.selectionKey);
     if (selected) state.selected.add(item.selectionKey);
     else state.selected.delete(item.selectionKey);
+    if (changed) invalidateVisibleItems({ selection: true });
   }
 
   function toggleSelected(item) {
@@ -1525,8 +1540,16 @@
   }
 
   function selectItems(items, replace = false) {
-    if (replace) state.selected.clear();
-    items.filter(isMediaItem).forEach(item => state.selected.add(item.selectionKey));
+    let changed = false;
+    if (replace && state.selected.size) {
+      state.selected.clear();
+      changed = true;
+    }
+    items.filter(isMediaItem).forEach(item => {
+      if (!state.selected.has(item.selectionKey)) changed = true;
+      state.selected.add(item.selectionKey);
+    });
+    if (changed) invalidateVisibleItems({ selection: true });
     updateSelectionUi();
   }
 
@@ -1555,6 +1578,40 @@
       const input = cardNode.querySelector('[data-select]');
       if (input) input.checked = checked;
     });
+  }
+
+  function downloadJobDetail(job, terminal) {
+    const indeterminate = job.status === 'downloading' && !job.total;
+    const jobPercent = job.total ? Math.min(100, Math.round((job.loaded / job.total) * 100)) : (terminal.has(job.status) ? 100 : (indeterminate ? 34 : 0));
+    const detail = job.status === 'downloading'
+      ? `${formatBytes(job.loaded)}${job.total ? ` / ${formatBytes(job.total)}` : ''}`
+      : job.status === 'skipped' ? 'Already downloaded - skipped'
+        : job.status === 'duplicate' ? (job.error || 'Duplicate content - merged')
+          : job.status === 'verification' ? 'Host verification required'
+            : job.status === 'failed' ? (job.error || 'Failed')
+              : job.status === 'packing' ? `Preparing ZIP - ${Math.round(job.packProgress || 0)}%`
+                : job.status === 'saved' ? 'Saved in ZIP or Downloads'
+                  : job.status.charAt(0).toUpperCase() + job.status.slice(1);
+    return { indeterminate, jobPercent, detail };
+  }
+
+  function updateDownloadJobRow(list, job, terminal) {
+    let row = list.querySelector(`[data-job-id="${job.id}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.dataset.jobId = String(job.id);
+      row.innerHTML = '<div><b></b><span></span></div><div class="scg-job-track"><i></i></div>';
+      list.appendChild(row);
+    }
+    const { indeterminate, jobPercent, detail } = downloadJobDetail(job, terminal);
+    row.className = `scg-download-job scg-job-${job.status}`;
+    const filename = row.querySelector('b');
+    filename.textContent = job.filename;
+    filename.title = job.filename;
+    row.querySelector('span').textContent = detail;
+    const fill = row.querySelector('i');
+    fill.classList.toggle('indeterminate', indeterminate);
+    fill.style.width = `${jobPercent}%`;
   }
 
   function updateDownloadUi() {
@@ -1586,20 +1643,24 @@
     if (overall) overall.textContent = jobs.length ? `${finished} of ${jobs.length} complete${loaded ? ` - ${formatBytes(loaded)}${total && totalsKnown ? ` / ${formatBytes(total)}` : ''}` : ''}` : 'No downloads yet.';
     const list = progress.querySelector('.scg-download-jobs');
     if (list) {
-      list.innerHTML = jobs.slice(-40).map(job => {
-        const indeterminate = job.status === 'downloading' && !job.total;
-        const jobPercent = job.total ? Math.min(100, Math.round((job.loaded / job.total) * 100)) : (terminal.has(job.status) ? 100 : (indeterminate ? 34 : 0));
-        const detail = job.status === 'downloading'
-          ? `${formatBytes(job.loaded)}${job.total ? ` / ${formatBytes(job.total)}` : ''}`
-          : job.status === 'skipped' ? 'Already downloaded - skipped'
-            : job.status === 'duplicate' ? (job.error || 'Duplicate content - merged')
-            : job.status === 'verification' ? 'Host verification required'
-              : job.status === 'failed' ? (job.error || 'Failed')
-                : job.status === 'packing' ? `Preparing ZIP - ${Math.round(job.packProgress || 0)}%`
-                  : job.status === 'saved' ? 'Saved in ZIP or Downloads'
-                    : job.status.charAt(0).toUpperCase() + job.status.slice(1);
-        return `<div class="scg-download-job scg-job-${escapeHtml(job.status)}"><div><b title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</b><span>${escapeHtml(detail)}</span></div><div class="scg-job-track"><i class="${indeterminate ? 'indeterminate' : ''}" style="width:${jobPercent}%"></i></div></div>`;
-      }).join('') || '<div class="scg-download-empty">No downloads yet.</div>';
+      const recentJobs = jobs.slice(-40);
+      const recentIds = new Set(recentJobs.map(job => String(job.id)));
+      list.querySelectorAll('[data-job-id]').forEach(row => {
+        if (!recentIds.has(row.dataset.jobId)) row.remove();
+      });
+      list.querySelector('.scg-download-empty')?.remove();
+      recentJobs.forEach(job => {
+        if (scheduleDownloadUi.dirtyJobs.has(job.id) || !list.querySelector(`[data-job-id="${job.id}"]`)) {
+          updateDownloadJobRow(list, job, terminal);
+        }
+      });
+      if (!recentJobs.length && !list.querySelector('.scg-download-empty')) {
+        const empty = document.createElement('div');
+        empty.className = 'scg-download-empty';
+        empty.textContent = 'No downloads yet.';
+        list.appendChild(empty);
+      }
+      scheduleDownloadUi.dirtyJobs.clear();
     }
     app.querySelectorAll('[data-action="page"], [data-action="load-source-page"], [data-source-page]').forEach(control => {
       control.disabled = state.downloading || state.scanning;
@@ -1607,7 +1668,6 @@
     const threadScanButton = app.querySelector('[data-action="thread"]');
     if (threadScanButton) threadScanButton.disabled = state.downloading;
     updateSelectionUi();
-    updateDownloadedIndicators();
   }
 
   function fetchMediaBlob(url, headers, onProgress) {
@@ -2200,6 +2260,11 @@
   }
 
   function visibleItems() {
+    const signature = JSON.stringify([
+      datasetRevision, selectionRevision, state.filter, state.query, state.sort, state.groupBy,
+      state.authorFilter, state.hostFilter, state.selectedOnly, state.perPage, state.viewPage,
+    ]);
+    if (visibleItemsCache.signature === signature) return visibleItemsCache.items;
     const q = state.query.trim().toLowerCase();
     const filtered = state.items.filter(item => {
       const typeMatch = state.filter === 'all' || item.type === state.filter ||
@@ -2218,6 +2283,7 @@
     else if (state.sort === 'host') filtered.sort((a, b) => alpha(itemSourceHost(a), itemSourceHost(b)) || thread(a, b));
     else if (state.sort === 'type') filtered.sort((a, b) => (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) || thread(a, b));
     else filtered.sort(thread);
+    visibleItemsCache = { signature, items: filtered };
     return filtered;
   }
 
@@ -2483,7 +2549,7 @@
     updateSelectionUi();
     updateDownloadUi();
     refreshThreadHeader();
-    refreshSettingsPanel();
+    if (app.querySelector('.scg-settings-panel.open')) refreshSettingsPanel();
   }
 
   function normalizeMediaDimensions(width, height) {
@@ -2884,6 +2950,7 @@
   }
 
   function resetDatasetState() {
+    invalidateVisibleItems({ dataset: true, selection: true });
     state.selected.clear();
     state.selectionMode = false;
     state.selectedOnly = false;
@@ -3695,14 +3762,15 @@
       position:relative;overflow:hidden;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
       background:var(--scg-surface);
-      box-shadow:var(--scg-shadow-sm);
+      box-shadow:0 3px 12px #00000052;
+      contain:paint style;
       transition:transform .18s cubic-bezier(.2,.7,.3,1),border-color .18s,box-shadow .18s;
     }
     #${APP_ID}.compact .scg-card{border-radius:var(--scg-r-md)}
     #${APP_ID} .scg-card:hover{
       transform:translateY(-2px);
       border-color:var(--scg-line-strong);
-      box-shadow:var(--scg-shadow);
+      box-shadow:0 7px 20px #00000066;
     }
     #${APP_ID} .scg-card:focus-within{border-color:color-mix(in srgb,var(--scg-accent) 55%,var(--scg-line))}
     #${APP_ID} .scg-card.selected{
@@ -3727,10 +3795,9 @@
       padding:4px 8px;
       border:1px solid color-mix(in srgb,#ffffff 14%,transparent);
       border-radius:99px;
-      background:#0b0d10cc;color:#dfe4ea;
+      background:#0b0d10f2;color:#dfe4ea;
       font-size:10px;font-weight:600;
-      backdrop-filter:blur(10px);
-      box-shadow:0 3px 10px #00000059;
+      box-shadow:0 2px 7px #00000052;
     }
     #${APP_ID} .scg-badge b{
       color:#ffffff;font-size:9.5px;font-weight:700;
@@ -3751,8 +3818,8 @@
     #${APP_ID} .scg-select span{
       display:grid;place-items:center;width:30px;height:30px;
       border:1.5px solid #ffffffb8;border-radius:10px;
-      background:#0b0d10bf;backdrop-filter:blur(8px);
-      box-shadow:0 3px 12px #00000073;
+      background:#0b0d10f2;
+      box-shadow:0 2px 8px #00000066;
       transition:background .14s,border-color .14s;
     }
     #${APP_ID} .scg-select input:checked+span{background:var(--scg-accent);border-color:var(--scg-accent)}
@@ -4059,7 +4126,7 @@
       color:var(--scg-muted);font-size:11.5px;font-variant-numeric:tabular-nums;
     }
     #${APP_ID} .scg-download-jobs{max-height:min(420px,48vh);overflow:auto;padding:8px}
-    #${APP_ID} .scg-download-job{padding:9px 10px;border-radius:var(--scg-r-md)}
+    #${APP_ID} .scg-download-job{padding:9px 10px;border-radius:var(--scg-r-md);contain:content}
     #${APP_ID} .scg-download-job+.scg-download-job{border-top:1px solid var(--scg-line)}
     #${APP_ID} .scg-download-job>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}
     #${APP_ID} .scg-download-job b{
@@ -4915,6 +4982,7 @@
     if (state.selectionMode) {
       state.selectionMode = false;
       state.selected.clear();
+      invalidateVisibleItems({ selection: true });
       state.selectedOnly = false;
     } else {
       state.selectionMode = true;
@@ -5017,6 +5085,7 @@
   app.querySelector('[data-action="select-videos"]').onclick = () => selectItems(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
   app.querySelector('[data-action="clear-selection"]').onclick = () => {
     state.selected.clear();
+    invalidateVisibleItems({ selection: true });
     if (state.selectedOnly) render();
     else updateSelectionUi();
   };

@@ -105,3 +105,27 @@ test('preview-only Darkroom UI is recognized without making it a stable tag', ()
   assert.match(source, /min="70" max="160" step="5"/);
 });
 
+test('download progress stays isolated from full gallery rendering', () => {
+  const scheduleStart = source.indexOf('function scheduleDownloadUi()');
+  const scheduleEnd = source.indexOf('function updateDownloadedIndicators', scheduleStart);
+  const updateStart = source.indexOf('function downloadJobDetail');
+  const updateEnd = source.indexOf('function fetchMediaBlob', updateStart);
+  assert.notEqual(scheduleStart, -1);
+  assert.notEqual(scheduleEnd, -1);
+  assert.notEqual(updateStart, -1);
+  assert.notEqual(updateEnd, -1);
+  const progressSource = source.slice(scheduleStart, scheduleEnd) + source.slice(updateStart, updateEnd);
+
+  assert.match(progressSource, /}, 250\);/);
+  assert.match(progressSource, /updateDownloadJobRow/);
+  assert.match(progressSource, /data-job-id/);
+  assert.doesNotMatch(progressSource, /\bvisibleItems\s*\(/);
+  assert.doesNotMatch(progressSource, /\brender\s*\(/);
+  assert.doesNotMatch(progressSource, /\.innerHTML\s*=\s*jobs/);
+});
+
+test('visible results use an invalidated cache', () => {
+  assert.match(source, /let visibleItemsCache = \{ signature: '', items: \[\] \}/);
+  assert.match(source, /if \(visibleItemsCache\.signature === signature\) return visibleItemsCache\.items/);
+  assert.match(source, /invalidateVisibleItems\(\{ dataset: true, selection: true \}\)/);
+});
