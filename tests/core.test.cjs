@@ -220,3 +220,104 @@ test('collapsed groups omit cards, expose aria-expanded, and reset with the data
   assert.match(resetSource, /state\.collapsedReplies\.clear\(\)/);
   assert.doesNotMatch(source.slice(source.indexOf('function persistSettings'), source.indexOf('function refreshThreadHeader')), /collapsedReplies/);
 });
+
+test('reply-level selection derives checked and indeterminate state from the data model', () => {
+  let invalidations = 0;
+  const state = {
+    items: [
+      { reply: 'one', selectionKey: 'image-1', downloadable: true },
+      { reply: 'one', selectionKey: 'video-1', downloadable: true },
+      { reply: 'one', selectionKey: 'text-1', downloadable: false },
+      { reply: 'two', selectionKey: 'image-2', downloadable: true },
+    ],
+    selected: new Set(),
+  };
+  const { replySelectionState, setReplySelected } = evaluateSlice(
+    'function replyDownloadableItems',
+    'function buildViewPages',
+    ['replySelectionState', 'setReplySelected'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      invalidateVisibleItems: () => { invalidations++; },
+    },
+  );
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(replySelectionState('one'), (key, value) => key === 'eligible' ? undefined : value)),
+    { total: 2, selected: 0, checked: false, indeterminate: false },
+  );
+  assert.equal(setReplySelected('one', true), true);
+  assert.deepEqual([...state.selected].sort(), ['image-1', 'video-1']);
+  assert.equal(replySelectionState('one').checked, true);
+
+  state.selected.delete('video-1');
+  const partial = replySelectionState('one');
+  assert.equal(partial.checked, false);
+  assert.equal(partial.indeterminate, true);
+  assert.equal(partial.selected, 1);
+
+  assert.equal(setReplySelected('one', false), true);
+  assert.equal(replySelectionState('one').selected, 0);
+  assert.equal(invalidations, 2);
+});
+
+test('reply selection works while collapsed and spans all indexed reply items', () => {
+  const state = {
+    items: Array.from({ length: 75 }, (_, index) => ({
+      reply: 'large-reply',
+      selectionKey: `media-${index}`,
+      downloadable: true,
+    })),
+    selected: new Set(),
+    collapsedReplies: new Set(['large-reply']),
+  };
+  const { setReplySelected, replySelectionState } = evaluateSlice(
+    'function replyDownloadableItems',
+    'function buildViewPages',
+    ['setReplySelected', 'replySelectionState'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      invalidateVisibleItems: () => {},
+    },
+  );
+
+  setReplySelected('large-reply', true);
+  assert.equal(state.selected.size, 75);
+  assert.equal(replySelectionState('large-reply').checked, true);
+  assert.equal(state.collapsedReplies.has('large-reply'), true);
+});
+
+test('exit selection clears every selection without canceling an active download', () => {
+  const state = {
+    selectionMode: true,
+    selectedOnly: true,
+    selected: new Set(['a', 'b', 'c']),
+    downloading: true,
+    cancelDownload: false,
+  };
+  const { exitSelectionMode } = evaluateSlice(
+    'function clearSelection',
+    'function toggleSelected',
+    ['exitSelectionMode'],
+    { state, invalidateVisibleItems: () => {} },
+  );
+
+  exitSelectionMode();
+  assert.equal(state.selectionMode, false);
+  assert.equal(state.selectedOnly, false);
+  assert.equal(state.selected.size, 0);
+  assert.equal(state.downloading, true);
+  assert.equal(state.cancelDownload, false);
+});
+
+test('reply checkbox exposes native indeterminate state after rendering', () => {
+  assert.match(source, /input\.indeterminate = replySelection\.indeterminate/);
+  assert.match(source, /aria-checked.*'mixed'/);
+  assert.match(source, /data-reply-select/);
+  assert.match(source, /data-reply-selection-count/);
+  assert.match(source, /iconWell\('select'\)/);
+});

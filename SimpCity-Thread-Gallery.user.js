@@ -496,6 +496,15 @@
 
   const isMediaItem = item => item?.type === 'image' || item?.type === 'video' || item?.type === 'embed';
 
+  function isDownloadableMedia(item) {
+    if (!isMediaItem(item)) return false;
+    const candidate = item.resolution?.candidate;
+    if (candidate?.status === 'failed' || (item.resolution?.attempted && !candidate?.url)) return false;
+    if (item.type === 'image') return Boolean(candidate?.url || item.url || item.thumb);
+    if (item.type === 'video') return Boolean((candidate?.url && VIDEO_EXT.test(candidate.url)) || VIDEO_EXT.test(item.url || ''));
+    return Boolean(candidate?.status === 'confirmed' && candidate.url) || hostDefinition(item.url)?.id === 'turbo';
+  }
+
   function downloadHistoryKey(item) {
     const base = threadBaseUrl(item?.pageUrl || item?.postUrl || location.href);
     return `${base}|${item?.selectionKey || itemDedupeKey(item)}`;
@@ -1328,15 +1337,28 @@
   }
 
   function selectedMediaItems() {
-    return state.items.filter(item => isMediaItem(item) && state.selected.has(item.selectionKey));
+    return state.items.filter(item => isDownloadableMedia(item) && state.selected.has(item.selectionKey));
   }
 
   function setSelected(item, selected) {
-    if (!isMediaItem(item)) return;
+    if (!isDownloadableMedia(item)) return;
     const changed = selected ? !state.selected.has(item.selectionKey) : state.selected.has(item.selectionKey);
     if (selected) state.selected.add(item.selectionKey);
     else state.selected.delete(item.selectionKey);
     if (changed) invalidateVisibleItems({ selection: true });
+  }
+
+  function clearSelection() {
+    if (!state.selected.size) return false;
+    state.selected.clear();
+    invalidateVisibleItems({ selection: true });
+    return true;
+  }
+
+  function exitSelectionMode() {
+    state.selectionMode = false;
+    clearSelection();
+    state.selectedOnly = false;
   }
 
   function toggleSelected(item) {
@@ -1567,7 +1589,7 @@
       state.selected.clear();
       changed = true;
     }
-    items.filter(isMediaItem).forEach(item => {
+    items.filter(isDownloadableMedia).forEach(item => {
       if (!state.selected.has(item.selectionKey)) changed = true;
       state.selected.add(item.selectionKey);
     });
@@ -1589,7 +1611,7 @@
       setIconButton(downloadButton, state.downloading ? 'close' : 'archive', state.downloading ? 'Cancel ZIP queue' : `Download ZIP (${count})`);
       downloadButton.disabled = !count && !state.downloading;
     }
-    if (clearButton) clearButton.disabled = !count || state.downloading;
+    if (clearButton) clearButton.disabled = !count;
     const modeButton = app.querySelector('[data-action="selection-mode"]');
     if (modeButton) setIconButton(modeButton, state.selectionMode ? 'close' : 'select', state.selectionMode ? 'Exit selection' : `Select media${count ? ` (${count})` : ''}`);
     const visible = state.renderedItems;
@@ -1599,6 +1621,23 @@
       cardNode.classList.toggle('selected', state.selectionMode && checked);
       const input = cardNode.querySelector('[data-select]');
       if (input) input.checked = checked;
+    });
+    updateReplySelectionUi();
+  }
+
+  function updateReplySelectionUi() {
+    const app = document.getElementById(APP_ID);
+    if (!app) return;
+    app.querySelectorAll('.scg-reply-group[data-reply-key]').forEach(group => {
+      const replySelection = replySelectionState(group.dataset.replyKey);
+      const input = group.querySelector('[data-reply-select]');
+      if (input) {
+        input.checked = replySelection.checked;
+        input.indeterminate = replySelection.indeterminate;
+        input.setAttribute('aria-checked', replySelection.indeterminate ? 'mixed' : String(replySelection.checked));
+      }
+      const count = group.querySelector('[data-reply-selection-count]');
+      if (count) count.textContent = `${replySelection.selected} of ${replySelection.total} downloadable selected`;
     });
   }
 
@@ -2329,6 +2368,39 @@
     return changed;
   }
 
+  function replyDownloadableItems(key) {
+    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item));
+  }
+
+  function replySelectionState(key) {
+    const eligible = replyDownloadableItems(key);
+    const selected = eligible.reduce((total, item) => total + (state.selected.has(item.selectionKey) ? 1 : 0), 0);
+    return {
+      eligible,
+      total: eligible.length,
+      selected,
+      checked: eligible.length > 0 && selected === eligible.length,
+      indeterminate: selected > 0 && selected < eligible.length,
+    };
+  }
+
+  function setReplySelected(key, selected) {
+    const { eligible } = replySelectionState(key);
+    let changed = false;
+    eligible.forEach(item => {
+      const hasItem = state.selected.has(item.selectionKey);
+      if (selected && !hasItem) {
+        state.selected.add(item.selectionKey);
+        changed = true;
+      } else if (!selected && hasItem) {
+        state.selected.delete(item.selectionKey);
+        changed = true;
+      }
+    });
+    if (changed) invalidateVisibleItems({ selection: true });
+    return changed;
+  }
+
   function buildViewPages(items) {
     const limit = state.perPage;
     if (!items.length) return [[]];
@@ -2413,7 +2485,7 @@
     const downloaded = isMediaItem(item) && wasDownloaded(item);
     const legacyDownload = isMediaItem(item) && hasLegacyDownload(item);
     const historyClass = downloaded ? 'downloaded' : (legacyDownload ? 'download-legacy' : '');
-    const selection = isMediaItem(item)
+    const selection = isDownloadableMedia(item)
       ? `<label class="scg-select" title="Select for bulk download"><input type="checkbox" data-select="${index}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
       : '';
     const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : item.type.toUpperCase());
@@ -2496,7 +2568,11 @@
       const replyLabel = first.postNumber ? `Reply #${first.postNumber}` : `Reply ${Number(first.postIndex || 0) + 1}`;
       const collapsed = state.collapsedReplies.has(key);
       const toggleLabel = collapsed ? `Expand ${replyLabel}` : `Collapse ${replyLabel}`;
-      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header><button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
+      const replySelection = replySelectionState(key);
+      const replySelect = state.selectionMode && replySelection.total
+        ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
+        : '';
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
     }).join('');
   }
 
@@ -4403,6 +4479,14 @@
       min-height:30px;padding:5px 8px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
       background:var(--scg-surface);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
     }
+    #${APP_ID} .scg-reply-select{
+      display:none;align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID}.selecting .scg-reply-select{display:inline-flex}
+    #${APP_ID} .scg-reply-select input{width:16px;height:16px;margin:0;accent-color:var(--scg-accent);cursor:pointer}
+    #${APP_ID} .scg-reply-select .scg-icon{color:var(--scg-accent)}
     #${APP_ID} .scg-reply-toggle:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
     #${APP_ID} .scg-reply-toggle .scg-icon{transition:transform .18s ease}
     #${APP_ID} .scg-reply-toggle[aria-expanded="false"] .scg-icon{transform:rotate(-90deg)}
@@ -5124,12 +5208,8 @@
     }, { persist: true });
   };
   app.querySelector('[data-action="selection-mode"]').onclick = () => {
-    if (state.downloading) return notify('The bulk download is still running.');
     if (state.selectionMode) {
-      state.selectionMode = false;
-      state.selected.clear();
-      invalidateVisibleItems({ selection: true });
-      state.selectedOnly = false;
+      exitSelectionMode();
     } else {
       state.selectionMode = true;
     }
@@ -5233,8 +5313,7 @@
   app.querySelector('[data-action="select-images"]').onclick = () => selectItems(state.items.filter(item => item.type === 'image'));
   app.querySelector('[data-action="select-videos"]').onclick = () => selectItems(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
   app.querySelector('[data-action="clear-selection"]').onclick = () => {
-    state.selected.clear();
-    invalidateVisibleItems({ selection: true });
+    clearSelection();
     if (state.selectedOnly) render();
     else updateSelectionUi();
   };
@@ -5284,6 +5363,13 @@
   scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
   app.querySelector('.scg-grid').onclick = event => {
     const items = state.renderedItems;
+    const replySelect = event.target.closest('[data-reply-select]');
+    if (replySelect) {
+      setReplySelected(replySelect.dataset.replySelect, replySelect.checked);
+      if (state.selectedOnly) render();
+      else updateSelectionUi();
+      return;
+    }
     const replyToggle = event.target.closest('[data-reply-toggle]');
     if (replyToggle) {
       setReplyCollapsed(replyToggle.dataset.replyToggle, replyToggle.getAttribute('aria-expanded') === 'true');
@@ -5294,7 +5380,8 @@
     if (selection) {
       const item = items[Number(selection.dataset.select)];
       setSelected(item, selection.checked);
-      updateSelectionUi();
+      if (state.selectedOnly) render();
+      else updateSelectionUi();
       return;
     }
     const player = event.target.closest('[data-load-player]');
