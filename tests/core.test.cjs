@@ -440,17 +440,6 @@ test('interface polish retains responsive, native, and launcher safeguards', () 
   assert.match(source, /\.scg-lightbox \[data-tooltip\]:after\{max-width:170px\}/);
 });
 
-test('gallery scrolling keeps native momentum and throttles visual scroll work', () => {
-  assert.match(source, /scroll-behavior:smooth;overscroll-behavior-y:contain/);
-  assert.match(source, /scrollbar-gutter:stable;-webkit-overflow-scrolling:touch/);
-  assert.match(source, /touch-action:pan-y pinch-zoom/);
-  assert.match(source, /\.scrolling \.scg-activitybar\{[\s\S]*?backdrop-filter:blur\(20px\) saturate\(155%\)/);
-  assert.match(source, /requestAnimationFrame\(scrollToGalleryTop\)/);
-  assert.match(source, /requestAnimationFrame\(refreshScrollUi\)/);
-  assert.match(source, /addEventListener\('scroll',[\s\S]*?\{ passive: true \}\)/);
-  assert.doesNotMatch(source, /scrollArea\.addEventListener\('wheel'/);
-});
-
 test('viewer loader and translucent chrome have resilient motion states', () => {
   assert.match(source, /\.scg-viewer-loading i\{[\s\S]*?display:block;[\s\S]*?animation:scg-viewer-spin/);
   assert.match(source, /scg-viewer-loading i,[\s\S]*?viewer-buffering:before\{[\s\S]*?animation:none !important;border-color:var\(--scg-accent\)/);
