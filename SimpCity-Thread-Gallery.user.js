@@ -1610,6 +1610,7 @@
     if (downloadButton) {
       setIconButton(downloadButton, state.downloading ? 'close' : 'archive', state.downloading ? 'Cancel ZIP queue' : `Download ZIP (${count})`);
       downloadButton.disabled = !count && !state.downloading;
+      downloadButton.classList.toggle('cancel-download', state.downloading);
     }
     if (clearButton) clearButton.disabled = !count;
     const modeButton = app.querySelector('[data-action="selection-mode"]');
@@ -3272,8 +3273,8 @@
       --scg-success-soft:#0d2a22;
       --scg-warn:#e0b062;
       --scg-warn-soft:#2a2114;
-      --scg-danger:#ff7d96;
-      --scg-danger-soft:#2c1219;
+      --scg-danger:#f06b78;
+      --scg-danger-soft:#321316;
       --scg-shadow:0 18px 48px #00000094;
       --scg-shadow-sm:0 6px 18px #0000006b;
       --scg-focus:#7cc8ff;
@@ -3446,6 +3447,7 @@
     #${APP_ID} .scg-tip-end[data-tooltip]:focus-visible:after{left:auto;right:0;transform:none}
     #${APP_ID} .scg-tip-up[data-tooltip]:hover:after,
     #${APP_ID} .scg-tip-up[data-tooltip]:focus-visible:after{top:auto;bottom:calc(100% + 8px)}
+    #${APP_ID} .scg-lightbox [data-tooltip]:after{max-width:170px}
 
     /* Scrollbars */
     #${APP_ID} *{scrollbar-width:thin;scrollbar-color:var(--scg-line-strong) transparent}
@@ -4240,7 +4242,19 @@
     #${APP_ID}.selecting .scg-selection-toggle .scg-icon{color:var(--scg-accent)}
 
     #${APP_ID} .scg-bulk-actions{display:none;align-items:center;gap:6px;min-width:0;flex:1}
-    #${APP_ID}.selecting .scg-bulk-actions{display:flex}
+    #${APP_ID}.selecting .scg-bulk-actions,
+    #${APP_ID}.downloading .scg-bulk-actions{display:flex}
+    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions{flex:0 0 auto}
+    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions>*:not([data-action="download-selected"]){display:none}
+    #${APP_ID} .scg-activitybar .cancel-download{
+      border-color:color-mix(in srgb,var(--scg-danger) 65%,transparent);
+      background:var(--scg-danger-soft);color:var(--scg-danger);
+    }
+    #${APP_ID} .scg-activitybar .cancel-download .scg-icon{color:var(--scg-danger)}
+    #${APP_ID} .scg-activitybar .cancel-download:hover:not(:disabled){
+      border-color:var(--scg-danger);background:color-mix(in srgb,var(--scg-danger-soft) 72%,var(--scg-danger));color:#ffffff;
+    }
+    #${APP_ID} .scg-activitybar .cancel-download:hover:not(:disabled) .scg-icon{color:#ffffff}
     #${APP_ID} .scg-bulk-label{
       flex:none;color:var(--scg-muted);
       font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
@@ -4254,6 +4268,8 @@
 
     #${APP_ID} .scg-progress{position:relative;display:flex;min-width:220px;max-width:440px;flex:1 1 300px}
     #${APP_ID}.selecting .scg-progress{display:none}
+    #${APP_ID}.selecting.has-downloads .scg-progress,
+    #${APP_ID}.selecting.downloading .scg-progress{display:flex;min-width:150px;max-width:320px;flex:1 1 220px}
     #${APP_ID} .scg-progress-summary{
       display:flex !important;align-items:center;gap:10px;width:100%;min-width:0;
       min-height:34px;padding:6px 11px !important;
@@ -4898,9 +4914,11 @@
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
       #${APP_ID} .scg-progress-text{max-width:130px}
       #${APP_ID} .scg-selection-toggle>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions{flex-wrap:wrap;flex-basis:100%}
+      #${APP_ID}.selecting .scg-bulk-actions,
+      #${APP_ID}.downloading .scg-bulk-actions{flex-wrap:wrap;flex-basis:100%}
       #${APP_ID}.selecting .scg-bulk-actions button>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions .scg-primary>span{display:inline}
+      #${APP_ID}.selecting .scg-bulk-actions .scg-primary>span,
+      #${APP_ID}.downloading .scg-bulk-actions .scg-primary>span{display:inline}
       #${APP_ID} .scg-download-popover{position:fixed;right:8px;left:8px;bottom:76px;width:auto;max-height:62vh}
       #${APP_ID} .scg-download-job>div:first-child{align-items:flex-start;flex-direction:column;gap:3px}
       #${APP_ID} .scg-diag-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -4943,6 +4961,8 @@
       #${APP_ID} .scg-viewer-details{max-height:none}
       #${APP_ID} .scg-viewer-shortcuts{display:none}
       #${APP_ID} .scg-viewer-thumb{width:44px;height:44px}
+      #${APP_ID} .scg-download-popover{max-height:52vh}
+      #${APP_ID} .scg-download-jobs{max-height:30vh}
     }
 
     /* ---- 20. Touch targets ------------------------------------- */

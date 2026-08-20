@@ -321,3 +321,19 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /data-reply-selection-count/);
   assert.match(source, /iconWell\('select'\)/);
 });
+
+test('dock preserves active queue status and cancellation across selection states', () => {
+  assert.match(source, /\.selecting\.has-downloads \.scg-progress/);
+  assert.match(source, /\.selecting\.downloading \.scg-progress/);
+  assert.match(source, /\.downloading \.scg-bulk-actions\{display:flex\}/);
+  assert.match(source, /classList\.toggle\('cancel-download', state\.downloading\)/);
+  assert.match(source, /state\.downloading \? 'Cancel ZIP queue'/);
+});
+
+test('interface polish retains responsive, native, and launcher safeguards', () => {
+  assert.match(source, /#\$\{APP_ID\} select option\{background:var\(--scg-surface\);color:var\(--scg-text\)\}/);
+  assert.match(source, /@media\(max-height:620px\)/);
+  assert.match(source, /\.scg-download-jobs\{max-height:30vh\}/);
+  assert.match(source, /#scg-launch\{[\s\S]*?min-height:66px/);
+  assert.match(source, /\.scg-lightbox \[data-tooltip\]:after\{max-width:170px\}/);
+});
