@@ -61,9 +61,9 @@ Use the GitHub bug or feature template once the public repository is connected. 
 
 ## Development and releases
 
-- `main` contains the v0.9.6 gallery baseline.
-- `develop` is available for ongoing development from that baseline.
-- `feature/v0.9.7` contains the unmerged v0.9.7 release candidate.
+- `main` contains the current v0.9.7 release.
+- `develop` is the integration branch for ongoing development.
+- Release work is completed on feature branches and promoted to `main` after checks pass.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.
 - GitHub Releases will provide downloadable historical versions; version-numbered JS/TXT copies are not active source files.
 

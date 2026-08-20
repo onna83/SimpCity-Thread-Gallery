@@ -2,9 +2,9 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
-## 0.9.7 - Release candidate
+## 0.9.7
 
-Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or published.
+Completed on `feature/v0.9.7` and promoted to `main`.
 
 - Reduced repeated gallery compositing work by removing blur from repeated badges and selection controls, simplifying card shadows, and adding safe paint/style containment.
 - Cached filtered and sorted results, kept the card-size slider CSS-variable based, and isolated download progress from full gallery rendering.
