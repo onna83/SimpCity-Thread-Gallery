@@ -3527,10 +3527,22 @@
     #${APP_ID} .scg-plate{
       position:relative;z-index:40;
       margin:12px 12px 0;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
-      background:var(--scg-surface);
-      box-shadow:var(--scg-shadow-sm);
+      border:1px solid color-mix(in srgb,#ffffff 16%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 60%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 42%,transparent));
+      box-shadow:0 14px 38px #00000052,
+        inset 0 1px 0 color-mix(in srgb,#ffffff 13%,transparent),
+        inset 0 -1px 0 color-mix(in srgb,#000000 14%,transparent);
+      backdrop-filter:blur(26px) saturate(160%);
+      -webkit-backdrop-filter:blur(26px) saturate(160%);
+      isolation:isolate;
     }
+    #${APP_ID} .scg-plate:before{
+      content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
+      background:linear-gradient(112deg,color-mix(in srgb,#ffffff 9%,transparent),transparent 34%,color-mix(in srgb,var(--scg-accent) 5%,transparent));
+    }
+    #${APP_ID} .scg-plate>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-header{
       display:grid;
@@ -3844,6 +3856,19 @@
     }
     #${APP_ID} .scg-refinebar button.active .scg-icon{color:var(--scg-accent)}
     #${APP_ID} .scg-refine-spacer{display:none}
+
+    /* Frost the plate's larger control wells without fading their content. */
+    #${APP_ID} .scg-plate .scg-search input,
+    #${APP_ID} .scg-plate .scg-scan-actions,
+    #${APP_ID} .scg-plate .scg-filters,
+    #${APP_ID} .scg-plate .scg-layout-switcher,
+    #${APP_ID} .scg-plate .scg-view-pagination,
+    #${APP_ID} .scg-plate .scg-refine-trigger:not(.active):not([aria-expanded="true"]){
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);
+    }
+    #${APP_ID} .scg-plate select{background-color:color-mix(in srgb,var(--scg-surface-2) 46%,transparent)}
+    #${APP_ID} .scg-plate select:hover:not(:disabled){background-color:color-mix(in srgb,var(--scg-surface-3) 58%,transparent)}
+    #${APP_ID} .scg-plate .scg-search input:focus{background:color-mix(in srgb,var(--scg-surface) 68%,transparent)}
 
 
     /* ---- 9. Canvas -------------------------------------------- */
@@ -4183,20 +4208,20 @@
       display:flex;align-items:center;gap:12px;flex-wrap:nowrap;
       width:min(1240px,calc(100% - 36px));min-height:64px;
       padding:11px 14px;
-      border:1px solid color-mix(in srgb,#ffffff 18%,var(--scg-line-strong));border-radius:26px;
+      border:1px solid color-mix(in srgb,#ffffff 22%,var(--scg-line-strong));border-radius:26px;
       background:linear-gradient(135deg,
-        color-mix(in srgb,var(--scg-surface) 78%,transparent),
-        color-mix(in srgb,var(--scg-surface-2) 64%,transparent));
+        color-mix(in srgb,var(--scg-surface) 52%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 34%,transparent));
       box-shadow:0 20px 54px #00000070,
-        inset 0 1px 0 color-mix(in srgb,#ffffff 16%,transparent),
+        inset 0 1px 0 color-mix(in srgb,#ffffff 20%,transparent),
         inset 0 -1px 0 color-mix(in srgb,#000000 18%,transparent);
-      backdrop-filter:blur(28px) saturate(165%);
-      -webkit-backdrop-filter:blur(28px) saturate(165%);
+      backdrop-filter:blur(34px) saturate(180%);
+      -webkit-backdrop-filter:blur(34px) saturate(180%);
       isolation:isolate;
     }
     #${APP_ID} .scg-activitybar:before{
       content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
-      background:linear-gradient(115deg,color-mix(in srgb,#ffffff 10%,transparent),transparent 38%,color-mix(in srgb,var(--scg-accent) 7%,transparent));
+      background:linear-gradient(115deg,color-mix(in srgb,#ffffff 13%,transparent),transparent 38%,color-mix(in srgb,var(--scg-accent) 7%,transparent));
     }
     #${APP_ID} .scg-activitybar>*{position:relative;z-index:1}
 
@@ -4227,7 +4252,7 @@
       display:inline-flex;align-items:center;justify-content:center;gap:7px;
       min-height:40px;padding:9px 12px;
       border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
-      background:color-mix(in srgb,var(--scg-surface-2) 72%,transparent);color:var(--scg-text-soft);
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);color:var(--scg-text-soft);
       font-size:12px;font-weight:550;cursor:pointer;white-space:nowrap;
       transition:background .14s,border-color .14s,color .14s;
     }
@@ -4284,7 +4309,7 @@
       display:flex !important;align-items:center;gap:10px;width:100%;min-width:0;
       min-height:40px;padding:8px 12px !important;
       border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
-      background:color-mix(in srgb,var(--scg-surface-2) 72%,transparent);color:var(--scg-text-soft);cursor:pointer;
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);color:var(--scg-text-soft);cursor:pointer;
     }
     #${APP_ID} .scg-progress-track{
       position:relative;display:block;height:6px;flex:1;min-width:70px;overflow:hidden;

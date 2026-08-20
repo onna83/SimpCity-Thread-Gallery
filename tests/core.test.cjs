@@ -418,11 +418,15 @@ test('dock preserves active queue status and cancellation across selection state
   assert.match(source, /state\.downloading \? 'Cancel ZIP queue'/);
 });
 
-test('dock is a persistent glass surface without a collapse mode', () => {
+test('plate and dock are persistent translucent glass surfaces without a dock collapse mode', () => {
   assert.doesNotMatch(source, /activityCollapsed|activity-collapsed|activity-toggle|setting-activity-collapsed/);
+  assert.match(source, /\.scg-plate\{[\s\S]*?color-mix\(in srgb,var\(--scg-surface\) 60%,transparent\)/);
+  assert.match(source, /backdrop-filter:blur\(26px\) saturate\(160%\)/);
+  assert.match(source, /\.scg-plate:before\{/);
   assert.match(source, /\.scg-activitybar\{[\s\S]*?min-height:64px/);
-  assert.match(source, /backdrop-filter:blur\(28px\) saturate\(165%\)/);
-  assert.match(source, /-webkit-backdrop-filter:blur\(28px\) saturate\(165%\)/);
+  assert.match(source, /color-mix\(in srgb,var\(--scg-surface\) 52%,transparent\)/);
+  assert.match(source, /backdrop-filter:blur\(34px\) saturate\(180%\)/);
+  assert.match(source, /-webkit-backdrop-filter:blur\(34px\) saturate\(180%\)/);
   assert.match(source, /\.scg-activitybar:before\{/);
 });
 
