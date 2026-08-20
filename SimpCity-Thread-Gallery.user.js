@@ -3881,7 +3881,9 @@
       border-bottom:0;
       background:var(--scg-canvas);
       box-shadow:inset 0 1px 0 color-mix(in srgb,#ffffff 4%,transparent);
-      scroll-behavior:smooth;
+      scroll-behavior:smooth;overscroll-behavior-y:contain;
+      scrollbar-gutter:stable;-webkit-overflow-scrolling:touch;
+      touch-action:pan-y pinch-zoom;
     }
     #${APP_ID} .scg-top{
       position:absolute;z-index:26;right:26px;bottom:96px;
@@ -4218,6 +4220,11 @@
       backdrop-filter:blur(34px) saturate(180%);
       -webkit-backdrop-filter:blur(34px) saturate(180%);
       isolation:isolate;
+    }
+    /* Reduce live backdrop recompositing while the media canvas is moving. */
+    #${APP_ID}.scrolling .scg-activitybar{
+      backdrop-filter:blur(20px) saturate(155%);
+      -webkit-backdrop-filter:blur(20px) saturate(155%);
     }
     #${APP_ID} .scg-activitybar:before{
       content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
@@ -5377,10 +5384,14 @@
   };
   const scrollArea = app.querySelector('.scg-scroll');
   const topButton = app.querySelector('.scg-top');
+  const scrollToGalleryTop = () => scrollArea.scrollTo({
+    top: 0,
+    behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+  });
   const changeViewPage = page => {
     state.viewPage = Math.min(Math.max(1, Number(page) || 1), state.viewPages);
-    scrollArea.scrollTop = 0;
     render();
+    requestAnimationFrame(scrollToGalleryTop);
   };
   app.querySelector('[data-action="view-prev"]').onclick = () => changeViewPage(state.viewPage - 1);
   app.querySelector('[data-action="view-next"]').onclick = () => changeViewPage(state.viewPage + 1);
@@ -5396,10 +5407,21 @@
     slider.onchange = () => persistSettings();
   });
   topButton.onclick = () => {
-    scrollArea.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    scrollToGalleryTop();
     app.querySelector('[data-search]')?.focus({ preventScroll: true });
   };
-  scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
+  let scrollUiFrame = 0;
+  let scrollIdleTimer = 0;
+  const refreshScrollUi = () => {
+    scrollUiFrame = 0;
+    topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
+    app.classList.add('scrolling');
+    clearTimeout(scrollIdleTimer);
+    scrollIdleTimer = window.setTimeout(() => app.classList.remove('scrolling'), 140);
+  };
+  scrollArea.addEventListener('scroll', () => {
+    if (!scrollUiFrame) scrollUiFrame = requestAnimationFrame(refreshScrollUi);
+  }, { passive: true });
   app.querySelector('.scg-grid').onclick = event => {
     const items = state.renderedItems;
     const replySelect = event.target.closest('[data-reply-select]');

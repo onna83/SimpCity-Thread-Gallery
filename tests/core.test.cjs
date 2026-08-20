@@ -440,6 +440,17 @@ test('interface polish retains responsive, native, and launcher safeguards', () 
   assert.match(source, /\.scg-lightbox \[data-tooltip\]:after\{max-width:170px\}/);
 });
 
+test('gallery scrolling keeps native momentum and throttles visual scroll work', () => {
+  assert.match(source, /scroll-behavior:smooth;overscroll-behavior-y:contain/);
+  assert.match(source, /scrollbar-gutter:stable;-webkit-overflow-scrolling:touch/);
+  assert.match(source, /touch-action:pan-y pinch-zoom/);
+  assert.match(source, /\.scrolling \.scg-activitybar\{[\s\S]*?backdrop-filter:blur\(20px\) saturate\(155%\)/);
+  assert.match(source, /requestAnimationFrame\(scrollToGalleryTop\)/);
+  assert.match(source, /requestAnimationFrame\(refreshScrollUi\)/);
+  assert.match(source, /addEventListener\('scroll',[\s\S]*?\{ passive: true \}\)/);
+  assert.doesNotMatch(source, /scrollArea\.addEventListener\('wheel'/);
+});
+
 test('display labels are free of known mojibake sequences', () => {
   assert.doesNotMatch(source, /Ã|Â|â|�/);
   assert.match(source, /Darkroom · v\$\{APP_VERSION\}/);
