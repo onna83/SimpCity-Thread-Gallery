@@ -4208,7 +4208,7 @@
       display:flex;align-items:center;gap:12px;flex-wrap:nowrap;
       width:min(1240px,calc(100% - 36px));min-height:64px;
       padding:11px 14px;
-      border:1px solid color-mix(in srgb,#ffffff 22%,var(--scg-line-strong));border-radius:26px;
+      border:1px solid color-mix(in srgb,#ffffff 22%,var(--scg-line-strong));border-radius:18px;
       background:linear-gradient(135deg,
         color-mix(in srgb,var(--scg-surface) 52%,transparent),
         color-mix(in srgb,var(--scg-surface-2) 34%,transparent));
@@ -4935,7 +4935,7 @@
       #${APP_ID}[data-layout="feed"] .scg-skeleton{display:block;height:auto}
       #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:182px}
       #${APP_ID} .scg-badge span{display:none}
-      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:22px}
+      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px}
       #${APP_ID} .scg-activity-state{flex:1 1 100%}
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
       #${APP_ID} .scg-progress-text{max-width:130px}

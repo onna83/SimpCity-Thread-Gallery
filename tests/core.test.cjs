@@ -428,6 +428,8 @@ test('plate and dock are persistent translucent glass surfaces without a dock co
   assert.match(source, /backdrop-filter:blur\(34px\) saturate\(180%\)/);
   assert.match(source, /-webkit-backdrop-filter:blur\(34px\) saturate\(180%\)/);
   assert.match(source, /\.scg-activitybar:before\{/);
+  assert.match(source, /\.scg-activitybar\{[\s\S]*?border-radius:18px/);
+  assert.match(source, /min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px/);
 });
 
 test('interface polish retains responsive, native, and launcher safeguards', () => {
