@@ -432,6 +432,12 @@ test('plate and dock are persistent translucent glass surfaces without a dock co
   assert.match(source, /min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px/);
 });
 
+test('download queue uses restrained translucent glass without reducing readability', () => {
+  assert.match(source, /\.scg-download-popover\{[\s\S]*?var\(--scg-surface\) 94%,transparent[\s\S]*?var\(--scg-surface-2\) 90%,transparent[\s\S]*?backdrop-filter:blur\(20px\) saturate\(145%\)/);
+  assert.match(source, /\.scg-download-popover>header\{[\s\S]*?var\(--scg-surface-2\) 92%,transparent/);
+  assert.match(source, /\.scg-download-popover>header button\{[\s\S]*?var\(--scg-surface\) 94%,transparent/);
+});
+
 test('interface polish retains responsive, native, and launcher safeguards', () => {
   assert.match(source, /#\$\{APP_ID\} select option\{background:var\(--scg-surface\);color:var\(--scg-text\)\}/);
   assert.match(source, /@media\(max-height:620px\)/);
