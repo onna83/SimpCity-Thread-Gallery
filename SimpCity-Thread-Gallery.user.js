@@ -27,6 +27,8 @@
   const SETTINGS_KEY = 'sc-thread-gallery-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-download-history-v1';
   const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-storage-migrated-v072';
+  const LARGE_THREAD_WARNING_PAGES = 50;
+  const SCAN_WARNING_TEXT = 'Scanning a very large thread can use substantial RAM and may temporarily slow or freeze the browser. Media files remain unloaded until viewed.';
   if (document.getElementById(APP_ID)) return;
 
   const DEFAULT_SETTINGS = Object.freeze({
@@ -46,6 +48,7 @@
     archiveLayout: 'page-author',
     includeManifest: true,
     dedupeContent: true,
+    warnLargeThreadScan: true,
   });
   const THEME_MODES = Object.freeze(['dark', 'light', 'midnight', 'graphite']);
   const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight', midnight: 'Indigo', graphite: 'Graphite' });
@@ -133,6 +136,7 @@
     archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(savedSettings.archiveLayout) ? savedSettings.archiveLayout : 'page-author',
     includeManifest: savedSettings.includeManifest !== false,
     dedupeContent: savedSettings.dedupeContent !== false,
+    warnLargeThreadScan: savedSettings.warnLargeThreadScan !== false,
     authorFilter: 'all',
     hostFilter: 'all',
     selectedOnly: false,
@@ -146,6 +150,11 @@
     scanning: false,
     cancelScan: false,
     scannedPages: 0,
+    scanCurrentPage: 0,
+    scanTotalPages: 0,
+    scanFailedPages: 0,
+    scanCanceling: false,
+    scanController: null,
     sourceLabel: 'Current page',
     lightboxIndex: 0,
     viewerItems: [],
@@ -560,6 +569,7 @@
         archiveLayout: state.archiveLayout,
         includeManifest: state.includeManifest,
         dedupeContent: state.dedupeContent,
+        warnLargeThreadScan: state.warnLargeThreadScan,
       });
     }
     catch { /* Private browsing or storage restrictions should not break the gallery. */ }
@@ -1198,7 +1208,7 @@
     notify.timer = setTimeout(() => toast.classList.remove('show'), duration);
   }
 
-  function confirmAction({ title = 'Confirm action', message, confirmLabel = 'Continue', danger = false } = {}) {
+  function confirmAction({ title = 'Confirm action', message, confirmLabel = 'Continue', danger = false, preferenceLabel = '' } = {}) {
     const panel = document.querySelector(`#${APP_ID} .scg-confirm-panel`);
     if (!panel) return Promise.resolve(false);
     const previousFocus = document.activeElement;
@@ -1207,6 +1217,13 @@
     const accept = panel.querySelector('[data-confirm-accept]');
     setIconButton(accept, danger ? 'trash' : 'check', confirmLabel);
     accept.classList.toggle('danger', danger);
+    const preference = panel.querySelector('[data-confirm-preference]');
+    const preferenceInput = preference?.querySelector('input');
+    if (preference) preference.hidden = !preferenceLabel;
+    if (preferenceInput) {
+      preferenceInput.checked = false;
+      preference.querySelector('span').textContent = preferenceLabel;
+    }
     panel.classList.add('open');
     accept.focus();
     return new Promise(resolve => {
@@ -1216,7 +1233,7 @@
         panel.querySelector('[data-confirm-cancel]').onclick = null;
         panel.onclick = null;
         previousFocus?.focus?.();
-        resolve(value);
+        resolve(preferenceLabel ? { confirmed: value, preferenceChecked: Boolean(preferenceInput?.checked) } : value);
       };
       accept.onclick = () => finish(true);
       panel.querySelector('[data-confirm-cancel]').onclick = () => finish(false);
@@ -1363,6 +1380,7 @@
       archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(input.archiveLayout) ? input.archiveLayout : DEFAULT_SETTINGS.archiveLayout,
       includeManifest: input.includeManifest !== false,
       dedupeContent: input.dedupeContent !== false,
+      warnLargeThreadScan: input.warnLargeThreadScan !== false,
     };
   }
 
@@ -1384,6 +1402,7 @@
       archiveLayout: state.archiveLayout,
       includeManifest: state.includeManifest,
       dedupeContent: state.dedupeContent,
+      warnLargeThreadScan: state.warnLargeThreadScan,
     });
   }
 
@@ -1461,6 +1480,7 @@
     const partFiles = panel.querySelector('[data-setting-zip-part-files]');
     const manifest = panel.querySelector('[data-setting-include-manifest]');
     const dedupeContent = panel.querySelector('[data-setting-dedupe-content]');
+    const warnLargeScan = panel.querySelector('[data-setting-warn-large-scan]');
     if (themeSelect) themeSelect.value = state.theme;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     if (filtersCollapsed) filtersCollapsed.checked = state.filtersCollapsed;
@@ -1473,6 +1493,7 @@
     if (partFiles) partFiles.value = String(state.zipPartMaxFiles);
     if (manifest) manifest.checked = state.includeManifest;
     if (dedupeContent) dedupeContent.checked = state.dedupeContent;
+    if (warnLargeScan) warnLargeScan.checked = state.warnLargeThreadScan;
   }
 
   function openSettingsPanel() {
@@ -2969,62 +2990,110 @@
   function updateScanStatus() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
-    app.querySelector('.scg-status').textContent = `Indexed ${state.scannedPages} page${state.scannedPages === 1 ? '' : 's'} - ${state.items.length} items - media not loaded yet`;
+    const status = state.scanCanceling
+      ? `Canceling scan after ${state.scannedPages} completed page${state.scannedPages === 1 ? '' : 's'}`
+      : `Page ${state.scanCurrentPage} - ${state.scannedPages} of ${state.scanTotalPages} completed`;
+    app.querySelector('.scg-status').textContent = status;
     const detail = app.querySelector('[data-activity-detail]');
     if (detail) detail.textContent = `${state.items.length} items indexed Â· media stays unloaded`;
     refreshThreadHeader();
-    setIconButton(app.querySelector('[data-action="thread"]'), 'close', 'Cancel scan');
+    if (detail) detail.textContent = `${state.items.length} items found - ${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'} - media stays unloaded`;
+    setIconButton(app.querySelector('[data-action="thread"]'), 'close', state.scanCanceling ? 'Canceling scan' : 'Cancel scan');
+  }
+
+  async function confirmLargeThreadScan(pageCount) {
+    const result = await confirmAction({
+      title: 'Scan this large thread?',
+      message: `This thread has ${pageCount} detected pages. ${SCAN_WARNING_TEXT}`,
+      confirmLabel: 'Continue',
+      danger: true,
+      preferenceLabel: "Don't warn me again",
+    });
+    if (result?.confirmed && result.preferenceChecked) {
+      state.warnLargeThreadScan = false;
+      persistSettings();
+      if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
+    }
+    return Boolean(result?.confirmed);
   }
 
   async function scanThread() {
     if (state.downloading) return notify('Finish or cancel the ZIP queue before scanning another page.');
     if (state.scanning) {
       state.cancelScan = true;
+      state.scanCanceling = true;
+      state.scanController?.abort();
+      updateScanStatus();
       return;
+    }
+    updateThreadPageInfo(document, location.href);
+    const detectedPages = Math.max(1, state.threadPageCount);
+    if (state.warnLargeThreadScan && detectedPages >= LARGE_THREAD_WARNING_PAGES) {
+      if (!await confirmLargeThreadScan(detectedPages)) return;
     }
     state.scanning = true;
     state.cancelScan = false;
+    state.scanCanceling = false;
     state.scannedPages = 0;
+    state.scanCurrentPage = 0;
+    state.scanFailedPages = 0;
+    state.scanTotalPages = Math.min(detectedPages, 250);
     state.items = [];
     resetDatasetState();
     state.sourceLabel = 'Entire thread';
     render();
 
-    const base = threadBaseUrl();
-    let nextUrl = base;
-    const visited = new Set();
     const seenItems = new Set();
+    const controller = new AbortController();
+    state.scanController = controller;
     try {
-      while (nextUrl && !visited.has(nextUrl) && !state.cancelScan && visited.size < 250) {
-        visited.add(nextUrl);
-        let doc;
-        if (new URL(nextUrl).pathname === location.pathname && visited.size === 1) {
-          doc = document;
-        } else {
-          const response = await fetch(nextUrl, { credentials: 'include' });
-          if (!response.ok) throw new Error(`Page request failed (${response.status})`);
-          doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-        }
-        updateThreadPageInfo(doc, nextUrl);
-        appendUniqueItems(state.items, extractFromDocument(doc, nextUrl), seenItems);
-        state.scannedPages = visited.size;
+      for (let page = 1; page <= state.scanTotalPages && !state.cancelScan; page++) {
+        state.scanCurrentPage = page;
         updateScanStatus();
-        const next = doc.querySelector('a.pageNav-jump--next[href], a[rel="next"][href]');
-        nextUrl = next ? absoluteUrl(next.getAttribute('href'), nextUrl) : '';
-        doc = null;
-        if (nextUrl && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
+        const pageUrl = threadPageUrl(page);
+        let doc;
+        try {
+          if (new URL(pageUrl).pathname === location.pathname) {
+            doc = document;
+          } else {
+            const response = await fetch(pageUrl, { credentials: 'include', signal: controller.signal });
+            if (!response.ok) throw new Error(`Page request failed (${response.status})`);
+            const html = await response.text();
+            if (state.cancelScan || controller.signal.aborted) break;
+            doc = new DOMParser().parseFromString(html, 'text/html');
+          }
+          if (state.cancelScan || controller.signal.aborted) break;
+          updateThreadPageInfo(doc, pageUrl);
+          appendUniqueItems(state.items, extractFromDocument(doc, pageUrl), seenItems);
+          state.scannedPages++;
+        } catch (error) {
+          if (error?.name === 'AbortError' || state.cancelScan) break;
+          state.scanFailedPages++;
+          recordDiagnostic('scanFailures', `Whole-thread page ${page}`, error);
+        } finally {
+          doc = null;
+        }
+        updateScanStatus();
+        if (page < state.scanTotalPages && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
       }
-      if (nextUrl && visited.size >= 250) {
+      if (detectedPages > 250 && !state.cancelScan) {
         state.sourceLabel = 'Partial thread scan (250-page safety limit)';
         notify('Stopped at the 250-page safety limit. Use the page picker for later pages.', 6500);
+      } else if (state.scanFailedPages) {
+        state.sourceLabel = `Thread scan (${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'})`;
       }
     } catch (error) {
-      console.error('[SimpCity Gallery]', error);
-      recordDiagnostic('scanFailures', 'Whole-thread scan', error);
-      notify(`Gallery scan stopped: ${error.message}`, 6500);
+      if (error?.name !== 'AbortError') {
+        console.error('[SimpCity Gallery]', error);
+        recordDiagnostic('scanFailures', 'Whole-thread scan', error);
+        notify(`Gallery scan stopped: ${error.message}`, 6500);
+      }
     } finally {
       if (state.cancelScan && state.scannedPages) state.sourceLabel = `Partial thread scan (${state.scannedPages} pages)`;
+      else if (state.cancelScan) state.sourceLabel = 'Thread scan canceled';
+      state.scanController = null;
       state.scanning = false;
+      state.scanCanceling = false;
       state.cancelScan = false;
       render();
     }
@@ -3401,7 +3470,7 @@
 
 
     /* ---- 6. Search + scan ------------------------------------- */
-    #${APP_ID} .scg-controls{display:flex;align-items:center;gap:10px;min-width:0}
+    #${APP_ID} .scg-controls{position:relative;display:flex;align-items:center;gap:10px;min-width:0}
     #${APP_ID} .scg-search{position:relative;display:block;flex:1;min-width:0}
     #${APP_ID} .scg-search>.scg-icon-well{
       position:absolute;z-index:2;top:50%;left:11px;transform:translateY(-50%);
@@ -3434,6 +3503,18 @@
     #${APP_ID} .scg-scan-actions button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
     #${APP_ID} .scg-scan-actions button .scg-icon{color:var(--scg-muted)}
     #${APP_ID} .scg-scan-actions button:hover:not(:disabled) .scg-icon{color:var(--scg-text)}
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger{
+      border-color:#8f2b3d;background:#561521;color:#ffe7eb;
+    }
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger .scg-icon{color:#ffb4c1}
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:hover:not(:disabled),
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:focus-visible{
+      border-color:#d84760;background:#9e263c;color:#ffffff;
+    }
+    #${APP_ID} .scg-scan-warning{
+      position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+      overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;
+    }
     #${APP_ID} .scg-scan-actions [data-action="thread"]{
       border-color:color-mix(in srgb,var(--scg-accent) 40%,transparent);
       background:var(--scg-accent-soft);color:var(--scg-accent);
@@ -4283,6 +4364,12 @@
     #${APP_ID} .scg-confirm-icon .scg-icon{width:22px;height:22px}
     #${APP_ID} .scg-confirm-dialog h2{margin:0;color:var(--scg-text);font-size:16.5px;font-weight:650}
     #${APP_ID} .scg-confirm-dialog p{margin:9px 0 20px;color:var(--scg-muted);font-size:12.5px;line-height:1.55}
+    #${APP_ID} .scg-confirm-preference{
+      display:flex;align-items:center;justify-content:center;gap:8px;
+      margin:-8px 0 18px;color:var(--scg-text-soft);font-size:12px;cursor:pointer;
+    }
+    #${APP_ID} .scg-confirm-preference[hidden]{display:none}
+    #${APP_ID} .scg-confirm-preference input{accent-color:var(--scg-accent)}
     #${APP_ID} .scg-confirm-dialog>div:last-child{display:flex;justify-content:center;gap:9px}
     #${APP_ID} .scg-confirm-dialog button{
       display:inline-flex;align-items:center;justify-content:center;gap:7px;
@@ -4743,6 +4830,11 @@
       #${APP_ID} .scg-select,#${APP_ID} .scg-select span{width:36px;height:36px}
       #${APP_ID} .scg-viewer-thumb{min-height:0}
       #${APP_ID} [data-tooltip]:hover:after{display:none}
+      #${APP_ID} .scg-scan-warning{
+        position:static;width:auto;height:auto;padding:5px 8px;margin:0;
+        overflow:visible;clip:auto;white-space:normal;
+        color:var(--scg-muted);font-size:10.5px;line-height:1.35;
+      }
     }
 
     /* ---- 21. Reduced motion ------------------------------------ */
@@ -4805,8 +4897,9 @@
           <div class="scg-scan-actions" role="group" aria-label="Scan sources">
             <button data-action="page" data-tooltip="Index the page you are on">${iconWell('page')}<span>This page</span></button>
             <span class="scg-source-page"><select data-source-page aria-label="Thread page to load"></select><button data-action="load-source-page" data-tooltip="Load the selected thread page" aria-label="Load the selected thread page">${iconWell('download')}</button></span>
-            <button data-action="thread" data-tooltip="Index every page of this thread">${iconWell('scan')}<span>Scan thread</span></button>
+            <button class="scg-scan-thread-danger" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
           </div>
+          <span class="scg-scan-warning" id="scg-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
         </nav>
         <div class="scg-header-actions">
           <button data-action="filters-toggle" data-tooltip="Hide filters" aria-expanded="true" aria-controls="scg-filter-panel" aria-label="Hide filters">${iconWell('chevron')}<span>Filters</span></button>
@@ -4898,6 +4991,7 @@
         <div class="scg-settings-body"><div class="scg-settings-grid">
           <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered panel state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-activity-collapsed><span>Keep the activity bar compact</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
+          <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
           <section class="scg-settings-card"><h3>${icon('upload')} Backup and restore</h3><p>Export preferences as JSON or restore a previous backup.</p><label class="scg-settings-check"><input type="checkbox" data-export-history><span>Include download history. This contains thread and media references.</span></label><div class="scg-settings-actions"><button data-action="export-settings">${iconWell('download')}<span>Export</span></button><button data-action="import-settings">${iconWell('upload')}<span>Import</span></button><input class="scg-settings-file" data-settings-file type="file" accept="application/json,.json"></div></section>
           <section class="scg-settings-card full"><h3>${icon('info')} Diagnostics</h3><p>A local, URL-scrubbed summary for troubleshooting. Nothing is transmitted automatically.</p><div class="scg-diag-grid"><div class="scg-diag-stat"><span>Version</span><b data-diag-version></b></div><div class="scg-diag-stat"><span>Thread pages</span><b data-diag-pages></b></div><div class="scg-diag-stat"><span>Indexed items</span><b data-diag-items></b></div><div class="scg-diag-stat"><span>Download history</span><b data-diag-history></b></div><div class="scg-diag-stat"><span>Resolver failures</span><b data-diag-resolvers></b></div><div class="scg-diag-stat"><span>Download failures</span><b data-diag-downloads></b></div><div class="scg-diag-stat"><span>Scan failures</span><b data-diag-scans></b></div><div class="scg-diag-stat"><span>Storage</span><b data-diag-storage></b></div></div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="copy-debug">${iconWell('copy')}<span>Copy debug report</span></button><button data-action="clear-diagnostics">${iconWell('reset')}<span>Clear diagnostics</span></button></div></section>
@@ -4907,7 +5001,7 @@
         <footer class="scg-settings-foot"><span>SimpCity Thread Gallery <b>v${APP_VERSION}</b></span><span>Settings remain on this device unless you export them.</span></footer>
       </section>
     </div>
-    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
+    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><label class="scg-confirm-preference" data-confirm-preference hidden><input type="checkbox"><span></span></label><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
   document.body.appendChild(app);
   const toast = document.createElement('div');
   toast.id = 'scg-gallery-toast';
@@ -4937,6 +5031,8 @@
     app.classList.remove('open');
     document.documentElement.style.overflow = '';
     state.cancelScan = true;
+    state.scanCanceling = state.scanning;
+    state.scanController?.abort();
     closeLightbox();
     releaseRenderedMedia();
     state.renderedItems = [];
@@ -5061,6 +5157,9 @@
   };
   app.querySelector('[data-setting-dedupe-content]').onchange = event => {
     commitState({ dedupeContent: event.target.checked }, { persist: true, shellOnly: true });
+  };
+  app.querySelector('[data-setting-warn-large-scan]').onchange = event => {
+    commitState({ warnLargeThreadScan: event.target.checked }, { persist: true, shellOnly: true });
   };
   app.querySelector('.scg-settings-panel').onclick = event => {
     if (event.target.classList.contains('scg-settings-panel')) controllers.settings.close();

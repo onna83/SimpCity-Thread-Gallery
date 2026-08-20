@@ -129,3 +129,40 @@ test('visible results use an invalidated cache', () => {
   assert.match(source, /if \(visibleItemsCache\.signature === signature\) return visibleItemsCache\.items/);
   assert.match(source, /invalidateVisibleItems\(\{ dataset: true, selection: true \}\)/);
 });
+
+test('large-thread warning preference is persisted through existing settings storage', () => {
+  let stored;
+  const { persistSettings } = evaluateSlice(
+    'function persistSettings()',
+    'function refreshThreadHeader',
+    ['persistSettings'],
+    {
+      state: { warnLargeThreadScan: false },
+      storage: { set: (key, value) => { stored = { key, value }; } },
+      SETTINGS_KEY: 'settings-key',
+    },
+  );
+
+  persistSettings();
+  assert.equal(stored.key, 'settings-key');
+  assert.equal(stored.value.warnLargeThreadScan, false);
+  assert.match(source, /warnLargeThreadScan: savedSettings\.warnLargeThreadScan !== false/);
+  assert.match(source, /data-setting-warn-large-scan/);
+});
+
+test('full-thread scanning uses a custom warning and cancellable HTML-only requests', () => {
+  const start = source.indexOf('async function scanThread()');
+  const end = source.indexOf('function scanCurrentPage()', start);
+  const scanSource = source.slice(start, end);
+
+  assert.match(source, /const LARGE_THREAD_WARNING_PAGES = 50/);
+  assert.match(source, /function confirmLargeThreadScan/);
+  assert.match(source, /data-confirm-preference/);
+  assert.match(scanSource, /detectedPages >= LARGE_THREAD_WARNING_PAGES/);
+  assert.match(scanSource, /signal: controller\.signal/);
+  assert.match(scanSource, /response\.text\(\)/);
+  assert.match(scanSource, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
+  assert.match(scanSource, /state\.scanFailedPages\+\+/);
+  assert.match(scanSource, /state\.scanController\?\.abort\(\)/);
+  assert.doesNotMatch(scanSource, /resolveForDisplay|fetchMediaBlob|iframeHtml/);
+});
