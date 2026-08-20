@@ -2369,8 +2369,14 @@
     return changed;
   }
 
+  function matchesActiveSelectionType(item) {
+    if (state.filter === 'image') return item.type === 'image';
+    if (state.filter === 'video') return item.type === 'video' || item.type === 'embed';
+    return !state.filter || state.filter === 'all';
+  }
+
   function replyDownloadableItems(key) {
-    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item));
+    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveSelectionType(item));
   }
 
   function replySelectionState(key) {

@@ -233,7 +233,7 @@ test('reply-level selection derives checked and indeterminate state from the dat
     selected: new Set(),
   };
   const { replySelectionState, setReplySelected } = evaluateSlice(
-    'function replyDownloadableItems',
+    'function matchesActiveSelectionType',
     'function buildViewPages',
     ['replySelectionState', 'setReplySelected'],
     {
@@ -263,6 +263,46 @@ test('reply-level selection derives checked and indeterminate state from the dat
   assert.equal(invalidations, 2);
 });
 
+test('reply-level selection respects the active media type view', () => {
+  const state = {
+    filter: 'image',
+    items: [
+      { reply: 'one', selectionKey: 'image-1', type: 'image', downloadable: true },
+      { reply: 'one', selectionKey: 'video-1', type: 'video', downloadable: true },
+      { reply: 'one', selectionKey: 'embed-1', type: 'embed', downloadable: true },
+      { reply: 'one', selectionKey: 'link-1', type: 'link', downloadable: false },
+    ],
+    selected: new Set(),
+  };
+  const { setReplySelected, replySelectionState } = evaluateSlice(
+    'function matchesActiveSelectionType',
+    'function buildViewPages',
+    ['setReplySelected', 'replySelectionState'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      invalidateVisibleItems: () => {},
+    },
+  );
+
+  setReplySelected('one', true);
+  assert.deepEqual([...state.selected], ['image-1']);
+  assert.equal(replySelectionState('one').total, 1);
+
+  state.selected.clear();
+  state.filter = 'video';
+  setReplySelected('one', true);
+  assert.deepEqual([...state.selected].sort(), ['embed-1', 'video-1']);
+  assert.equal(replySelectionState('one').total, 2);
+
+  state.selected.clear();
+  state.filter = 'all';
+  setReplySelected('one', true);
+  assert.deepEqual([...state.selected].sort(), ['embed-1', 'image-1', 'video-1']);
+  assert.equal(replySelectionState('one').total, 3);
+});
+
 test('reply selection works while collapsed and spans all indexed reply items', () => {
   const state = {
     items: Array.from({ length: 75 }, (_, index) => ({
@@ -274,7 +314,7 @@ test('reply selection works while collapsed and spans all indexed reply items', 
     collapsedReplies: new Set(['large-reply']),
   };
   const { setReplySelected, replySelectionState } = evaluateSlice(
-    'function replyDownloadableItems',
+    'function matchesActiveSelectionType',
     'function buildViewPages',
     ['setReplySelected', 'replySelectionState'],
     {

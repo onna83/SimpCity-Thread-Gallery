@@ -12,6 +12,7 @@ Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or pu
 - Added a 50-page full-thread warning threshold, a persisted opt-out and re-enable setting, a custom RAM warning dialog, detailed scan status, failed-page accounting, and abortable HTML-only requests.
 - Added session-only reply collapse controls with Collapse All and Expand All.
 - Added reply-level downloadable-media selection with checked, unchecked, and native indeterminate states across collapsed groups and result-page chunks.
+- Made reply-level selection respect the active All, Images, or Videos view, so selecting a reply from Images no longer includes its videos.
 - Kept selection and active-download dock states usable together, including cancellation after selection mode is closed.
 - Repaired corrupted separators, dimensions, ellipses, and keyboard-help glyphs, and strengthened the full-thread action's red danger treatment.
 - Fixed long scan-warning tooltip wrapping and made the download-queue Close action dismiss reliably while returning focus to its trigger.
