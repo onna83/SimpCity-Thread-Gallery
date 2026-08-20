@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SimpCity Thread Gallery — Hybrid UI Fork
+// @name         SimpCity Thread Gallery
 // @namespace    local.simpcity.gallery.hybrid
-// @version      0.9.6
-// @description  Browse SimpCity thread media in a Darkroom gallery with filtering, lightbox viewing and verified downloads.
+// @version      0.9.7
+// @description  Browse SimpCity thread media in a full-screen gallery with filtering, lightbox viewing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -16,17 +16,19 @@
 (() => {
   'use strict';
 
-  // DESIGN DIRECTION: "Darkroom" â€” the media canvas is the page; a single
+  // DESIGN DIRECTION: the media canvas is the page; a single
   // floating instrument plate carries every frequent control; the dock at the
   // foot of the canvas changes identity between browse, select and download.
-  // Only behaviour-neutral UI code was changed from 0.9.5; scanning, resolving,
-  // validation, ZIP packing, history and diagnostics are untouched.
+  // v0.9.7 keeps the established architecture while reducing rendering work
+  // and adding safer scanning plus reply-level grouping and selection controls.
 
-  const APP_VERSION = '0.9.6';
+  const APP_VERSION = '0.9.7';
   const APP_ID = 'sc-thread-gallery';
   const SETTINGS_KEY = 'sc-thread-gallery-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-download-history-v1';
   const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-storage-migrated-v072';
+  const LARGE_THREAD_WARNING_PAGES = 50;
+  const SCAN_WARNING_TEXT = 'Scanning a very large thread can use substantial RAM and may temporarily slow or freeze the browser. Media files remain unloaded until viewed.';
   if (document.getElementById(APP_ID)) return;
 
   const DEFAULT_SETTINGS = Object.freeze({
@@ -37,7 +39,6 @@
     perPage: 60,
     theme: 'dark',
     filtersCollapsed: false,
-    activityCollapsed: false,
     layoutMode: 'masonry',
     cardScale: 100,
     downloadConcurrency: 2,
@@ -46,9 +47,11 @@
     archiveLayout: 'page-author',
     includeManifest: true,
     dedupeContent: true,
+    warnLargeThreadScan: true,
   });
   const THEME_MODES = Object.freeze(['dark', 'light', 'midnight', 'graphite']);
   const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight', midnight: 'Indigo', graphite: 'Graphite' });
+  const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500]);
 
   const storage = {
     mode: typeof GM_getValue === 'function' && typeof GM_setValue === 'function' ? 'Tampermonkey isolated storage' : 'page localStorage fallback',
@@ -121,10 +124,9 @@
     compact: Boolean(savedSettings.compact),
     sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
     groupBy: savedSettings.groupBy === 'reply' ? 'reply' : 'none',
-    perPage: [40, 60, 100].includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : 60,
+    perPage: VIEW_PAGE_SIZES.includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : DEFAULT_SETTINGS.perPage,
     theme: THEME_MODES.includes(savedSettings.theme) ? savedSettings.theme : DEFAULT_SETTINGS.theme,
     filtersCollapsed: Boolean(savedSettings.filtersCollapsed),
-    activityCollapsed: Boolean(savedSettings.activityCollapsed),
     layoutMode: ['masonry', 'grid', 'feed'].includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
     cardScale: Number.isFinite(Number(savedSettings.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(savedSettings.cardScale) / 5) * 5)) : 100,
     downloadConcurrency: [1, 2, 3, 4].includes(Number(savedSettings.downloadConcurrency)) ? Number(savedSettings.downloadConcurrency) : 2,
@@ -133,6 +135,7 @@
     archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(savedSettings.archiveLayout) ? savedSettings.archiveLayout : 'page-author',
     includeManifest: savedSettings.includeManifest !== false,
     dedupeContent: savedSettings.dedupeContent !== false,
+    warnLargeThreadScan: savedSettings.warnLargeThreadScan !== false,
     authorFilter: 'all',
     hostFilter: 'all',
     selectedOnly: false,
@@ -143,9 +146,15 @@
     sourcePage: 1,
     selectionMode: false,
     selected: new Set(),
+    collapsedReplies: new Set(),
     scanning: false,
     cancelScan: false,
     scannedPages: 0,
+    scanCurrentPage: 0,
+    scanTotalPages: 0,
+    scanFailedPages: 0,
+    scanCanceling: false,
+    scanController: null,
     sourceLabel: 'Current page',
     lightboxIndex: 0,
     viewerItems: [],
@@ -171,6 +180,16 @@
       events: [],
     },
   };
+
+  let datasetRevision = 0;
+  let selectionRevision = 0;
+  let visibleItemsCache = { signature: '', items: [] };
+
+  function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
+    if (dataset) datasetRevision++;
+    if (selection) selectionRevision++;
+    visibleItemsCache = { signature: '', items: [] };
+  }
 
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
@@ -260,7 +279,7 @@
     };
     bucket.push(entry);
     if (bucket.length > 100) bucket.splice(0, bucket.length - 100);
-    refreshSettingsPanel();
+    if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
   }
 
   const absoluteUrl = (value, base = location.href) => {
@@ -476,6 +495,15 @@
 
   const isMediaItem = item => item?.type === 'image' || item?.type === 'video' || item?.type === 'embed';
 
+  function isDownloadableMedia(item) {
+    if (!isMediaItem(item)) return false;
+    const candidate = item.resolution?.candidate;
+    if (candidate?.status === 'failed' || (item.resolution?.attempted && !candidate?.url)) return false;
+    if (item.type === 'image') return Boolean(candidate?.url || item.url || item.thumb);
+    if (item.type === 'video') return Boolean((candidate?.url && VIDEO_EXT.test(candidate.url)) || VIDEO_EXT.test(item.url || ''));
+    return Boolean(candidate?.status === 'confirmed' && candidate.url) || hostDefinition(item.url)?.id === 'turbo';
+  }
+
   function downloadHistoryKey(item) {
     const base = threadBaseUrl(item?.pageUrl || item?.postUrl || location.href);
     return `${base}|${item?.selectionKey || itemDedupeKey(item)}`;
@@ -541,7 +569,6 @@
         perPage: state.perPage,
         theme: state.theme,
         filtersCollapsed: state.filtersCollapsed,
-        activityCollapsed: state.activityCollapsed,
         layoutMode: state.layoutMode,
         cardScale: state.cardScale,
         downloadConcurrency: state.downloadConcurrency,
@@ -550,6 +577,7 @@
         archiveLayout: state.archiveLayout,
         includeManifest: state.includeManifest,
         dedupeContent: state.dedupeContent,
+        warnLargeThreadScan: state.warnLargeThreadScan,
       });
     }
     catch { /* Private browsing or storage restrictions should not break the gallery. */ }
@@ -571,7 +599,7 @@
         ? `${state.scanning ? 'Scanning' : 'Indexed'} ${state.scannedPages || 0} of ${state.threadPageCount} pages`
         : `Page ${state.sourcePage || pageNumberFromUrl()} of ${state.threadPageCount}`;
     }
-    if (source) source.textContent = `${state.sourceLabel} Â· ${state.items.length} indexed`;
+    if (source) source.textContent = `${state.sourceLabel} · ${state.items.length} indexed`;
   }
 
   function applyShellState() {
@@ -591,7 +619,6 @@
     app.style.setProperty('--scg-grid-compact-height', `${Math.round(312 * scale)}px`);
     app.classList.toggle('compact', state.compact);
     app.classList.toggle('filters-collapsed', state.filtersCollapsed);
-    app.classList.toggle('activity-collapsed', state.activityCollapsed);
     const toast = document.getElementById('scg-gallery-toast');
     if (toast) toast.dataset.theme = state.theme;
     const launch = document.getElementById('scg-launch');
@@ -613,16 +640,10 @@
       button.classList.toggle('active', active);
       button.setAttribute('aria-pressed', String(active));
     });
-    const activityToggle = app.querySelector('[data-action="activity-toggle"]');
-    if (activityToggle) {
-      setIconOnlyButton(activityToggle, 'chevron', state.activityCollapsed ? 'Expand activity bar' : 'Collapse activity bar');
-      activityToggle.setAttribute('aria-expanded', String(!state.activityCollapsed));
-    }
     refreshRefineTrigger();
     const themeSelect = app.querySelector('[data-setting-theme]');
     const densitySelect = app.querySelector('[data-setting-density]');
     const filterCheck = app.querySelector('[data-setting-filters-collapsed]');
-    const activityCheck = app.querySelector('[data-setting-activity-collapsed]');
     const layoutSelect = app.querySelector('[data-setting-layout]');
     const sizeSliders = app.querySelectorAll('[data-card-scale]');
     const sizeLabels = app.querySelectorAll('[data-card-scale-value]');
@@ -635,7 +656,6 @@
     });
     sizeLabels.forEach(label => { label.textContent = state.layoutMode === 'feed' ? 'Feed' : `${cardScale}%`; });
     if (filterCheck) filterCheck.checked = state.filtersCollapsed;
-    if (activityCheck) activityCheck.checked = state.activityCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
     refreshThreadHeader();
   }
@@ -723,7 +743,7 @@
     if (options.persist) persistSettings();
     if (options.shellOnly) {
       applyShellState();
-      refreshSettingsPanel();
+      if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
     } else if (options.render !== false) render();
     else {
       updateSelectionUi();
@@ -1134,12 +1154,14 @@
       error: '',
     };
     state.downloadJobs.push(job);
+    scheduleDownloadUi.dirtyJobs.add(job.id);
     return job;
   }
 
   function setDownloadJob(job, changes) {
     if (!job) return;
     Object.assign(job, changes);
+    scheduleDownloadUi.dirtyJobs.add(job.id);
     scheduleDownloadUi();
   }
 
@@ -1148,8 +1170,9 @@
     scheduleDownloadUi.timer = setTimeout(() => {
       scheduleDownloadUi.timer = 0;
       updateDownloadUi();
-    }, 180);
+    }, 250);
   }
+  scheduleDownloadUi.dirtyJobs = new Set();
 
   function updateDownloadedIndicators() {
     const app = document.getElementById(APP_ID);
@@ -1185,7 +1208,7 @@
     notify.timer = setTimeout(() => toast.classList.remove('show'), duration);
   }
 
-  function confirmAction({ title = 'Confirm action', message, confirmLabel = 'Continue', danger = false } = {}) {
+  function confirmAction({ title = 'Confirm action', message, confirmLabel = 'Continue', danger = false, preferenceLabel = '' } = {}) {
     const panel = document.querySelector(`#${APP_ID} .scg-confirm-panel`);
     if (!panel) return Promise.resolve(false);
     const previousFocus = document.activeElement;
@@ -1194,6 +1217,13 @@
     const accept = panel.querySelector('[data-confirm-accept]');
     setIconButton(accept, danger ? 'trash' : 'check', confirmLabel);
     accept.classList.toggle('danger', danger);
+    const preference = panel.querySelector('[data-confirm-preference]');
+    const preferenceInput = preference?.querySelector('input');
+    if (preference) preference.hidden = !preferenceLabel;
+    if (preferenceInput) {
+      preferenceInput.checked = false;
+      preference.querySelector('span').textContent = preferenceLabel;
+    }
     panel.classList.add('open');
     accept.focus();
     return new Promise(resolve => {
@@ -1203,7 +1233,7 @@
         panel.querySelector('[data-confirm-cancel]').onclick = null;
         panel.onclick = null;
         previousFocus?.focus?.();
-        resolve(value);
+        resolve(preferenceLabel ? { confirmed: value, preferenceChecked: Boolean(preferenceInput?.checked) } : value);
       };
       accept.onclick = () => finish(true);
       panel.querySelector('[data-confirm-cancel]').onclick = () => finish(false);
@@ -1297,13 +1327,28 @@
   }
 
   function selectedMediaItems() {
-    return state.items.filter(item => isMediaItem(item) && state.selected.has(item.selectionKey));
+    return state.items.filter(item => isDownloadableMedia(item) && state.selected.has(item.selectionKey));
   }
 
   function setSelected(item, selected) {
-    if (!isMediaItem(item)) return;
+    if (!isDownloadableMedia(item)) return;
+    const changed = selected ? !state.selected.has(item.selectionKey) : state.selected.has(item.selectionKey);
     if (selected) state.selected.add(item.selectionKey);
     else state.selected.delete(item.selectionKey);
+    if (changed) invalidateVisibleItems({ selection: true });
+  }
+
+  function clearSelection() {
+    if (!state.selected.size) return false;
+    state.selected.clear();
+    invalidateVisibleItems({ selection: true });
+    return true;
+  }
+
+  function exitSelectionMode() {
+    state.selectionMode = false;
+    clearSelection();
+    state.selectedOnly = false;
   }
 
   function toggleSelected(item) {
@@ -1336,10 +1381,9 @@
       compact: Boolean(input.compact),
       sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
       groupBy: input.groupBy === 'reply' ? 'reply' : DEFAULT_SETTINGS.groupBy,
-      perPage: [40, 60, 100].includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
+      perPage: VIEW_PAGE_SIZES.includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
       theme: THEME_MODES.includes(input.theme) ? input.theme : DEFAULT_SETTINGS.theme,
       filtersCollapsed: Boolean(input.filtersCollapsed),
-      activityCollapsed: Boolean(input.activityCollapsed),
       layoutMode: LAYOUT_MODES.includes(input.layoutMode) ? input.layoutMode : DEFAULT_SETTINGS.layoutMode,
       cardScale: Number.isFinite(Number(input.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(input.cardScale) / 5) * 5)) : DEFAULT_SETTINGS.cardScale,
       downloadConcurrency: [1, 2, 3, 4].includes(Number(input.downloadConcurrency)) ? Number(input.downloadConcurrency) : DEFAULT_SETTINGS.downloadConcurrency,
@@ -1348,6 +1392,7 @@
       archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(input.archiveLayout) ? input.archiveLayout : DEFAULT_SETTINGS.archiveLayout,
       includeManifest: input.includeManifest !== false,
       dedupeContent: input.dedupeContent !== false,
+      warnLargeThreadScan: input.warnLargeThreadScan !== false,
     };
   }
 
@@ -1360,7 +1405,6 @@
       perPage: state.perPage,
       theme: state.theme,
       filtersCollapsed: state.filtersCollapsed,
-      activityCollapsed: state.activityCollapsed,
       layoutMode: state.layoutMode,
       cardScale: state.cardScale,
       downloadConcurrency: state.downloadConcurrency,
@@ -1369,6 +1413,7 @@
       archiveLayout: state.archiveLayout,
       includeManifest: state.includeManifest,
       dedupeContent: state.dedupeContent,
+      warnLargeThreadScan: state.warnLargeThreadScan,
     });
   }
 
@@ -1437,7 +1482,6 @@
     const themeSelect = panel.querySelector('[data-setting-theme]');
     const densitySelect = panel.querySelector('[data-setting-density]');
     const filtersCollapsed = panel.querySelector('[data-setting-filters-collapsed]');
-    const activityCollapsed = panel.querySelector('[data-setting-activity-collapsed]');
     const layoutSelect = panel.querySelector('[data-setting-layout]');
     const cardScale = panel.querySelector('[data-card-scale]');
     const archiveLayout = panel.querySelector('[data-setting-archive-layout]');
@@ -1446,10 +1490,10 @@
     const partFiles = panel.querySelector('[data-setting-zip-part-files]');
     const manifest = panel.querySelector('[data-setting-include-manifest]');
     const dedupeContent = panel.querySelector('[data-setting-dedupe-content]');
+    const warnLargeScan = panel.querySelector('[data-setting-warn-large-scan]');
     if (themeSelect) themeSelect.value = state.theme;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     if (filtersCollapsed) filtersCollapsed.checked = state.filtersCollapsed;
-    if (activityCollapsed) activityCollapsed.checked = state.activityCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
     if (cardScale) cardScale.value = String(state.cardScale);
     if (archiveLayout) archiveLayout.value = state.archiveLayout;
@@ -1458,6 +1502,7 @@
     if (partFiles) partFiles.value = String(state.zipPartMaxFiles);
     if (manifest) manifest.checked = state.includeManifest;
     if (dedupeContent) dedupeContent.checked = state.dedupeContent;
+    if (warnLargeScan) warnLargeScan.checked = state.warnLargeThreadScan;
   }
 
   function openSettingsPanel() {
@@ -1515,6 +1560,19 @@
     notify(clearHistory ? 'Preferences and download history reset.' : 'Preferences reset.');
   }
 
+  function clearDownloadHistory() {
+    if (state.downloading) return false;
+    state.downloadHistory = {};
+    storage.remove(DOWNLOAD_HISTORY_KEY);
+    state.downloadJobs = [];
+    state.downloadProgress = blankDownloadProgress();
+    scheduleDownloadUi.dirtyJobs.clear();
+    updateDownloadedIndicators();
+    updateDownloadUi();
+    refreshSettingsPanel();
+    return true;
+  }
+
   function clearDiagnostics() {
     state.diagnostics.resolverFailures = [];
     state.diagnostics.downloadFailures = [];
@@ -1525,8 +1583,16 @@
   }
 
   function selectItems(items, replace = false) {
-    if (replace) state.selected.clear();
-    items.filter(isMediaItem).forEach(item => state.selected.add(item.selectionKey));
+    let changed = false;
+    if (replace && state.selected.size) {
+      state.selected.clear();
+      changed = true;
+    }
+    items.filter(isDownloadableMedia).forEach(item => {
+      if (!state.selected.has(item.selectionKey)) changed = true;
+      state.selected.add(item.selectionKey);
+    });
+    if (changed) invalidateVisibleItems({ selection: true });
     updateSelectionUi();
   }
 
@@ -1543,18 +1609,70 @@
     if (downloadButton) {
       setIconButton(downloadButton, state.downloading ? 'close' : 'archive', state.downloading ? 'Cancel ZIP queue' : `Download ZIP (${count})`);
       downloadButton.disabled = !count && !state.downloading;
+      downloadButton.classList.toggle('cancel-download', state.downloading);
     }
-    if (clearButton) clearButton.disabled = !count || state.downloading;
+    if (clearButton) clearButton.disabled = !count;
     const modeButton = app.querySelector('[data-action="selection-mode"]');
     if (modeButton) setIconButton(modeButton, state.selectionMode ? 'close' : 'select', state.selectionMode ? 'Exit selection' : `Select media${count ? ` (${count})` : ''}`);
     const visible = state.renderedItems;
     app.querySelectorAll('.scg-card[data-index]').forEach(cardNode => {
       const item = visible[Number(cardNode.dataset.index)];
-      const checked = Boolean(item && state.selected.has(item.selectionKey));
+      const checked = Boolean(item && isDownloadableMedia(item) && state.selected.has(item.selectionKey));
       cardNode.classList.toggle('selected', state.selectionMode && checked);
       const input = cardNode.querySelector('[data-select]');
       if (input) input.checked = checked;
     });
+    updateReplySelectionUi();
+  }
+
+  function updateReplySelectionUi() {
+    const app = document.getElementById(APP_ID);
+    if (!app) return;
+    app.querySelectorAll('.scg-reply-group[data-reply-key]').forEach(group => {
+      const replySelection = replySelectionState(group.dataset.replyKey);
+      const input = group.querySelector('[data-reply-select]');
+      if (input) {
+        input.checked = replySelection.checked;
+        input.indeterminate = replySelection.indeterminate;
+        input.setAttribute('aria-checked', replySelection.indeterminate ? 'mixed' : String(replySelection.checked));
+      }
+      const count = group.querySelector('[data-reply-selection-count]');
+      if (count) count.textContent = `${replySelection.selected} of ${replySelection.total} downloadable selected`;
+    });
+  }
+
+  function downloadJobDetail(job, terminal) {
+    const indeterminate = job.status === 'downloading' && !job.total;
+    const jobPercent = job.total ? Math.min(100, Math.round((job.loaded / job.total) * 100)) : (terminal.has(job.status) ? 100 : (indeterminate ? 34 : 0));
+    const detail = job.status === 'downloading'
+      ? `${formatBytes(job.loaded)}${job.total ? ` / ${formatBytes(job.total)}` : ''}`
+      : job.status === 'skipped' ? 'Already downloaded - skipped'
+        : job.status === 'duplicate' ? (job.error || 'Duplicate content - merged')
+          : job.status === 'verification' ? 'Host verification required'
+            : job.status === 'failed' ? (job.error || 'Failed')
+              : job.status === 'packing' ? `Preparing ZIP - ${Math.round(job.packProgress || 0)}%`
+                : job.status === 'saved' ? 'Saved in ZIP or Downloads'
+                  : job.status.charAt(0).toUpperCase() + job.status.slice(1);
+    return { indeterminate, jobPercent, detail };
+  }
+
+  function updateDownloadJobRow(list, job, terminal) {
+    let row = list.querySelector(`[data-job-id="${job.id}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.dataset.jobId = String(job.id);
+      row.innerHTML = '<div><b></b><span></span></div><div class="scg-job-track"><i></i></div>';
+      list.appendChild(row);
+    }
+    const { indeterminate, jobPercent, detail } = downloadJobDetail(job, terminal);
+    row.className = `scg-download-job scg-job-${job.status}`;
+    const filename = row.querySelector('b');
+    filename.textContent = job.filename;
+    filename.title = job.filename;
+    row.querySelector('span').textContent = detail;
+    const fill = row.querySelector('i');
+    fill.classList.toggle('indeterminate', indeterminate);
+    fill.style.width = `${jobPercent}%`;
   }
 
   function updateDownloadUi() {
@@ -1586,20 +1704,24 @@
     if (overall) overall.textContent = jobs.length ? `${finished} of ${jobs.length} complete${loaded ? ` - ${formatBytes(loaded)}${total && totalsKnown ? ` / ${formatBytes(total)}` : ''}` : ''}` : 'No downloads yet.';
     const list = progress.querySelector('.scg-download-jobs');
     if (list) {
-      list.innerHTML = jobs.slice(-40).map(job => {
-        const indeterminate = job.status === 'downloading' && !job.total;
-        const jobPercent = job.total ? Math.min(100, Math.round((job.loaded / job.total) * 100)) : (terminal.has(job.status) ? 100 : (indeterminate ? 34 : 0));
-        const detail = job.status === 'downloading'
-          ? `${formatBytes(job.loaded)}${job.total ? ` / ${formatBytes(job.total)}` : ''}`
-          : job.status === 'skipped' ? 'Already downloaded - skipped'
-            : job.status === 'duplicate' ? (job.error || 'Duplicate content - merged')
-            : job.status === 'verification' ? 'Host verification required'
-              : job.status === 'failed' ? (job.error || 'Failed')
-                : job.status === 'packing' ? `Preparing ZIP - ${Math.round(job.packProgress || 0)}%`
-                  : job.status === 'saved' ? 'Saved in ZIP or Downloads'
-                    : job.status.charAt(0).toUpperCase() + job.status.slice(1);
-        return `<div class="scg-download-job scg-job-${escapeHtml(job.status)}"><div><b title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</b><span>${escapeHtml(detail)}</span></div><div class="scg-job-track"><i class="${indeterminate ? 'indeterminate' : ''}" style="width:${jobPercent}%"></i></div></div>`;
-      }).join('') || '<div class="scg-download-empty">No downloads yet.</div>';
+      const recentJobs = jobs.slice(-40);
+      const recentIds = new Set(recentJobs.map(job => String(job.id)));
+      list.querySelectorAll('[data-job-id]').forEach(row => {
+        if (!recentIds.has(row.dataset.jobId)) row.remove();
+      });
+      list.querySelector('.scg-download-empty')?.remove();
+      recentJobs.forEach(job => {
+        if (scheduleDownloadUi.dirtyJobs.has(job.id) || !list.querySelector(`[data-job-id="${job.id}"]`)) {
+          updateDownloadJobRow(list, job, terminal);
+        }
+      });
+      if (!recentJobs.length && !list.querySelector('.scg-download-empty')) {
+        const empty = document.createElement('div');
+        empty.className = 'scg-download-empty';
+        empty.textContent = 'No downloads yet.';
+        list.appendChild(empty);
+      }
+      scheduleDownloadUi.dirtyJobs.clear();
     }
     app.querySelectorAll('[data-action="page"], [data-action="load-source-page"], [data-source-page]').forEach(control => {
       control.disabled = state.downloading || state.scanning;
@@ -1607,7 +1729,6 @@
     const threadScanButton = app.querySelector('[data-action="thread"]');
     if (threadScanButton) threadScanButton.disabled = state.downloading;
     updateSelectionUi();
-    updateDownloadedIndicators();
   }
 
   function fetchMediaBlob(url, headers, onProgress) {
@@ -2200,6 +2321,11 @@
   }
 
   function visibleItems() {
+    const signature = JSON.stringify([
+      datasetRevision, selectionRevision, state.filter, state.query, state.sort, state.groupBy,
+      state.authorFilter, state.hostFilter, state.selectedOnly, state.perPage, state.viewPage,
+    ]);
+    if (visibleItemsCache.signature === signature) return visibleItemsCache.items;
     const q = state.query.trim().toLowerCase();
     const filtered = state.items.filter(item => {
       const typeMatch = state.filter === 'all' || item.type === state.filter ||
@@ -2207,7 +2333,7 @@
       const host = itemSourceHost(item);
       const authorMatch = state.authorFilter === 'all' || item.author === state.authorFilter;
       const hostMatch = state.hostFilter === 'all' || host === state.hostFilter;
-      const selectedMatch = !state.selectedOnly || state.selected.has(item.selectionKey);
+      const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
       return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
     });
 
@@ -2218,11 +2344,67 @@
     else if (state.sort === 'host') filtered.sort((a, b) => alpha(itemSourceHost(a), itemSourceHost(b)) || thread(a, b));
     else if (state.sort === 'type') filtered.sort((a, b) => (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) || thread(a, b));
     else filtered.sort(thread);
+    visibleItemsCache = { signature, items: filtered };
     return filtered;
   }
 
   function replyKey(item) {
     return `${item.pageNumber || 1}|${item.postId || item.postUrl || item.postIndex || 0}`;
+  }
+
+  function setReplyCollapsed(key, collapsed) {
+    const normalizedKey = String(key || '');
+    if (!normalizedKey) return false;
+    const changed = collapsed ? !state.collapsedReplies.has(normalizedKey) : state.collapsedReplies.has(normalizedKey);
+    if (collapsed) state.collapsedReplies.add(normalizedKey);
+    else state.collapsedReplies.delete(normalizedKey);
+    return changed;
+  }
+
+  function setReplyGroupsCollapsed(items, collapsed) {
+    const keys = new Set(items.map(replyKey));
+    let changed = false;
+    keys.forEach(key => { if (setReplyCollapsed(key, collapsed)) changed = true; });
+    return changed;
+  }
+
+  function matchesActiveSelectionType(item) {
+    if (state.filter === 'image') return item.type === 'image';
+    if (state.filter === 'video') return item.type === 'video' || item.type === 'embed';
+    return !state.filter || state.filter === 'all';
+  }
+
+  function replyDownloadableItems(key) {
+    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveSelectionType(item));
+  }
+
+  function replySelectionState(key) {
+    const eligible = replyDownloadableItems(key);
+    const selected = eligible.reduce((total, item) => total + (state.selected.has(item.selectionKey) ? 1 : 0), 0);
+    return {
+      eligible,
+      total: eligible.length,
+      selected,
+      checked: eligible.length > 0 && selected === eligible.length,
+      indeterminate: selected > 0 && selected < eligible.length,
+    };
+  }
+
+  function setReplySelected(key, selected) {
+    const { eligible } = replySelectionState(key);
+    let changed = false;
+    eligible.forEach(item => {
+      const hasItem = state.selected.has(item.selectionKey);
+      if (selected && !hasItem) {
+        state.selected.add(item.selectionKey);
+        changed = true;
+      } else if (!selected && hasItem) {
+        state.selected.delete(item.selectionKey);
+        changed = true;
+      }
+    });
+    if (changed) invalidateVisibleItems({ selection: true });
+    return changed;
   }
 
   function buildViewPages(items) {
@@ -2309,7 +2491,7 @@
     const downloaded = isMediaItem(item) && wasDownloaded(item);
     const legacyDownload = isMediaItem(item) && hasLegacyDownload(item);
     const historyClass = downloaded ? 'downloaded' : (legacyDownload ? 'download-legacy' : '');
-    const selection = isMediaItem(item)
+    const selection = isDownloadableMedia(item)
       ? `<label class="scg-select" title="Select for bulk download"><input type="checkbox" data-select="${index}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
       : '';
     const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : item.type.toUpperCase());
@@ -2387,10 +2569,16 @@
       if (!groups.has(key)) groups.set(key, { first: item, entries: [] });
       groups.get(key).entries.push({ item, index });
     });
-    return [...groups.values()].map(group => {
+    return [...groups.entries()].map(([key, group]) => {
       const first = group.first;
       const replyLabel = first.postNumber ? `Reply #${first.postNumber}` : `Reply ${Number(first.postIndex || 0) + 1}`;
-      return `<section class="scg-reply-group"><header><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
+      const collapsed = state.collapsedReplies.has(key);
+      const toggleLabel = collapsed ? `Expand ${replyLabel}` : `Collapse ${replyLabel}`;
+      const replySelection = replySelectionState(key);
+      const replySelect = state.selectionMode && replySelection.total
+        ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
+        : '';
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
     }).join('');
   }
 
@@ -2433,6 +2621,7 @@
     const c = counts();
     app.classList.toggle('scanning', state.scanning);
     app.classList.toggle('selecting', state.selectionMode);
+    app.classList.toggle('grouped-replies', state.groupBy === 'reply');
     applyShellState();
     app.querySelectorAll('[data-filter], [data-search], [data-card-scale], .scg-refinebar button, .scg-refinebar select, .scg-viewbar button, .scg-viewbar select, [data-action="selection-mode"], [data-action="page"], [data-action="load-source-page"]').forEach(control => {
       control.disabled = state.scanning;
@@ -2467,8 +2656,8 @@
       : state.sourceLabel;
     const activityDetail = app.querySelector('[data-activity-detail]');
     if (activityDetail) activityDetail.textContent = state.scanning
-      ? `${state.items.length} items indexed Â· media stays unloaded`
-      : `${LAYOUT_LABELS[state.layoutMode]} Â· ${matched.length} matched Â· ${state.items.length} indexed Â· view ${state.viewPage} of ${state.viewPages}`;
+      ? `${state.items.length} items indexed · media stays unloaded`
+      : `${LAYOUT_LABELS[state.layoutMode]} · ${matched.length} matched · ${state.items.length} indexed · view ${state.viewPage} of ${state.viewPages}`;
     setIconButton(app.querySelector('[data-action="thread"]'), state.scanning ? 'close' : 'scan', state.scanning ? 'Cancel scan' : 'Scan entire thread');
     setIconButton(app.querySelector('[data-action="selection-mode"]'), state.selectionMode ? 'close' : 'select', state.selectionMode
       ? 'Exit selection'
@@ -2483,7 +2672,7 @@
     updateSelectionUi();
     updateDownloadUi();
     refreshThreadHeader();
-    refreshSettingsPanel();
+    if (app.querySelector('.scg-settings-panel.open')) refreshSettingsPanel();
   }
 
   function normalizeMediaDimensions(width, height) {
@@ -2495,13 +2684,13 @@
   function mediaResolutionText(dimensions, qualifier = '') {
     const normalized = normalizeMediaDimensions(dimensions?.width, dimensions?.height);
     if (!normalized) return 'Unavailable';
-    const value = `${normalized.width.toLocaleString()} Ã— ${normalized.height.toLocaleString()}`;
-    return qualifier ? `${qualifier} Â· ${value}` : value;
+    const value = `${normalized.width.toLocaleString()} × ${normalized.height.toLocaleString()}`;
+    return qualifier ? `${qualifier} · ${value}` : value;
   }
 
   function cachedMediaResolution(item) {
     const dimensions = normalizeMediaDimensions(item?.mediaDimensions?.width, item?.mediaDimensions?.height);
-    if (!dimensions) return 'Detectingâ€¦';
+    if (!dimensions) return 'Detecting…';
     return mediaResolutionText(dimensions, item.mediaDimensions.qualifier || '');
   }
 
@@ -2693,14 +2882,30 @@
 
   let viewerChromeTimer = 0;
 
+  function viewerChromeEngaged(box) {
+    const active = document.activeElement;
+    const keyboardFocused = active instanceof Element && active.matches(':focus-visible');
+    return [...box.querySelectorAll('.scg-viewer-topbar, .scg-viewer-footer')].some(panel =>
+      panel.matches(':hover') || (keyboardFocused && panel.contains(active)));
+  }
+
+  function armViewerChromeIdle(box, delay = 2600) {
+    clearTimeout(viewerChromeTimer);
+    viewerChromeTimer = window.setTimeout(() => {
+      if (!box.classList.contains('open')) return;
+      if (viewerChromeEngaged(box)) {
+        armViewerChromeIdle(box, 800);
+        return;
+      }
+      box.classList.add('viewer-idle');
+    }, delay);
+  }
+
   function wakeViewerChrome() {
     const box = document.querySelector(`#${APP_ID} .scg-lightbox.open`);
     if (!box) return;
     box.classList.remove('viewer-idle');
-    clearTimeout(viewerChromeTimer);
-    viewerChromeTimer = window.setTimeout(() => {
-      if (box.classList.contains('open') && !state.viewerInfoOpen) box.classList.add('viewer-idle');
-    }, 2800);
+    armViewerChromeIdle(box);
   }
 
   function closeLightbox() {
@@ -2738,7 +2943,7 @@
     box.innerHTML = `
       <div class="scg-viewer-shell">
         <header class="scg-viewer-topbar">
-          <div class="scg-viewer-identity"><b>${state.lightboxIndex + 1}<span>/ ${items.length}</span></b><div><div class="scg-viewer-titleline"><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="scg-viewer-resolution" data-viewer-resolution>${escapeHtml(resolutionLabel)}</span></div><small>${escapeHtml(item.author || 'Unknown')} Â· ${escapeHtml(viewerReplyLabel(item))} Â· Page ${Number(item.pageNumber || 1)} Â· ${escapeHtml(sourceHost)}</small></div></div>
+          <div class="scg-viewer-identity"><b>${state.lightboxIndex + 1}<span>/ ${items.length}</span></b><div><div class="scg-viewer-titleline"><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="scg-viewer-resolution" data-viewer-resolution>${escapeHtml(resolutionLabel)}</span></div><small>${escapeHtml(item.author || 'Unknown')} · ${escapeHtml(viewerReplyLabel(item))} · Page ${Number(item.pageNumber || 1)} · ${escapeHtml(sourceHost)}</small></div></div>
           <div class="scg-viewer-tools" role="toolbar" aria-label="Viewer tools">
             <div class="scg-viewer-zoom ${item.type === 'image' ? '' : 'unavailable'}" role="group" aria-label="Zoom"><button data-viewer-zoom-out data-tooltip="Zoom out" aria-label="Zoom out">${iconWell('zoomOut')}</button><button data-viewer-fit data-tooltip="Fit image" aria-label="Fit image">${iconWell('fit')}<span data-viewer-zoom-value>100%</span></button><button data-viewer-zoom-in data-tooltip="Zoom in" aria-label="Zoom in">${iconWell('zoomIn')}</button></div>
             <button class="scg-viewer-download" data-download-current data-tooltip="${wasDownloaded(item) ? 'Download again (D)' : 'Download (D)'}" aria-label="${wasDownloaded(item) ? 'Download again' : 'Download media'}">${iconWell('download', 'scg-icon-well-primary')}</button>
@@ -2749,13 +2954,13 @@
         </header>
         <div class="scg-viewer-body">
           <button class="scg-nav scg-prev" data-viewer-prev aria-label="Previous media">${icon('previous')}</button>
-          <section class="scg-lightbox-stage" data-viewer-stage aria-live="polite"><div class="scg-viewer-loading"><i></i><span>Resolving original mediaâ€¦</span></div></section>
+          <section class="scg-lightbox-stage" data-viewer-stage aria-live="polite"><div class="scg-viewer-loading"><i></i><span>Resolving original media…</span></div></section>
           <aside class="scg-viewer-details">
             <div class="scg-viewer-details-head"><span>${icon(item.type === 'image' ? 'image' : 'video')}</span><div><b>${escapeHtml(typeLabel)}</b><small>${escapeHtml(sourceHost)}</small></div></div>
             ${item.caption ? `<p class="scg-viewer-caption">${escapeHtml(item.caption)}</p>` : ''}
             <dl><div><dt>Resolution</dt><dd data-viewer-resolution>${escapeHtml(resolutionLabel)}</dd></div><div><dt>Posted by</dt><dd>${escapeHtml(item.author || 'Unknown')}</dd></div><div><dt>Location</dt><dd>${escapeHtml(viewerReplyLabel(item))}, page ${Number(item.pageNumber || 1)}</dd></div><div><dt>Download</dt><dd>${escapeHtml(savedLabel)}</dd></div><div><dt>Collection</dt><dd>${items.length} filtered media items</dd></div></dl>
             <div class="scg-viewer-details-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Open source</span></a><a href="${escapeHtml(item.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></div>
-            <p class="scg-viewer-shortcuts"><b>Keys</b><br>â† â†’ previous / next Â· wheel or + âˆ’ zoom Â· 0 fit<br>I details Â· F fullscreen Â· Space play or pause<br>D download Â· S select Â· Esc close</p>
+            <p class="scg-viewer-shortcuts"><b>Keys</b><br>← → previous / next · wheel or + − zoom · 0 fit<br>I details · F fullscreen · Space play or pause<br>D download · S select · Esc close</p>
           </aside>
           <button class="scg-nav scg-next" data-viewer-next aria-label="Next media">${icon('next')}</button>
         </div>
@@ -2786,9 +2991,11 @@
     viewerTools.onclick = event => event.stopPropagation();
     box.onpointermove = wakeViewerChrome;
     box.onpointerdown = wakeViewerChrome;
+    box.onfocusin = wakeViewerChrome;
+    box.onpointerleave = () => armViewerChromeIdle(box, 700);
     wakeViewerChrome();
     box.querySelector('.scg-viewer-thumb.active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
-    if (!wasOpen) box.querySelector('[data-viewer-close]')?.focus({ preventScroll: true });
+    if (!wasOpen) box.focus({ preventScroll: true });
 
     const stage = box.querySelector('[data-viewer-stage]');
     const stillCurrent = () => box.classList.contains('open') && token === state.viewerRenderToken && currentViewerItem() === item;
@@ -2834,7 +3041,7 @@
       if (!stage.querySelector('iframe')) {
         setViewerResolutionStatus(box, 'Unavailable');
       } else {
-        setViewerResolutionStatus(box, 'Detectingâ€¦');
+        setViewerResolutionStatus(box, 'Detecting…');
         resolveForDisplay(item).then(async direct => {
           if (!stillCurrent()) return;
           const dimensions = direct?.url ? await probeVideoDimensions(direct.url) : null;
@@ -2884,7 +3091,9 @@
   }
 
   function resetDatasetState() {
+    invalidateVisibleItems({ dataset: true, selection: true });
     state.selected.clear();
+    state.collapsedReplies.clear();
     state.selectionMode = false;
     state.selectedOnly = false;
     state.authorFilter = 'all';
@@ -2902,62 +3111,109 @@
   function updateScanStatus() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
-    app.querySelector('.scg-status').textContent = `Indexed ${state.scannedPages} page${state.scannedPages === 1 ? '' : 's'} - ${state.items.length} items - media not loaded yet`;
+    const status = state.scanCanceling
+      ? `Canceling scan after ${state.scannedPages} completed page${state.scannedPages === 1 ? '' : 's'}`
+      : `Page ${state.scanCurrentPage} - ${state.scannedPages} of ${state.scanTotalPages} completed`;
+    app.querySelector('.scg-status').textContent = status;
     const detail = app.querySelector('[data-activity-detail]');
-    if (detail) detail.textContent = `${state.items.length} items indexed Â· media stays unloaded`;
     refreshThreadHeader();
-    setIconButton(app.querySelector('[data-action="thread"]'), 'close', 'Cancel scan');
+    if (detail) detail.textContent = `${state.items.length} items found - ${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'} - media stays unloaded`;
+    setIconButton(app.querySelector('[data-action="thread"]'), 'close', state.scanCanceling ? 'Canceling scan' : 'Cancel scan');
+  }
+
+  async function confirmLargeThreadScan(pageCount) {
+    const result = await confirmAction({
+      title: 'Scan this large thread?',
+      message: `This thread has ${pageCount} detected pages. ${SCAN_WARNING_TEXT}`,
+      confirmLabel: 'Continue',
+      danger: true,
+      preferenceLabel: "Don't warn me again",
+    });
+    if (result?.confirmed && result.preferenceChecked) {
+      state.warnLargeThreadScan = false;
+      persistSettings();
+      if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
+    }
+    return Boolean(result?.confirmed);
   }
 
   async function scanThread() {
     if (state.downloading) return notify('Finish or cancel the ZIP queue before scanning another page.');
     if (state.scanning) {
       state.cancelScan = true;
+      state.scanCanceling = true;
+      state.scanController?.abort();
+      updateScanStatus();
       return;
+    }
+    updateThreadPageInfo(document, location.href);
+    const detectedPages = Math.max(1, state.threadPageCount);
+    if (state.warnLargeThreadScan && detectedPages >= LARGE_THREAD_WARNING_PAGES) {
+      if (!await confirmLargeThreadScan(detectedPages)) return;
     }
     state.scanning = true;
     state.cancelScan = false;
+    state.scanCanceling = false;
     state.scannedPages = 0;
+    state.scanCurrentPage = 0;
+    state.scanFailedPages = 0;
+    state.scanTotalPages = Math.min(detectedPages, 250);
     state.items = [];
     resetDatasetState();
     state.sourceLabel = 'Entire thread';
     render();
 
-    const base = threadBaseUrl();
-    let nextUrl = base;
-    const visited = new Set();
     const seenItems = new Set();
+    const controller = new AbortController();
+    state.scanController = controller;
     try {
-      while (nextUrl && !visited.has(nextUrl) && !state.cancelScan && visited.size < 250) {
-        visited.add(nextUrl);
-        let doc;
-        if (new URL(nextUrl).pathname === location.pathname && visited.size === 1) {
-          doc = document;
-        } else {
-          const response = await fetch(nextUrl, { credentials: 'include' });
-          if (!response.ok) throw new Error(`Page request failed (${response.status})`);
-          doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-        }
-        updateThreadPageInfo(doc, nextUrl);
-        appendUniqueItems(state.items, extractFromDocument(doc, nextUrl), seenItems);
-        state.scannedPages = visited.size;
+      for (let page = 1; page <= state.scanTotalPages && !state.cancelScan; page++) {
+        state.scanCurrentPage = page;
         updateScanStatus();
-        const next = doc.querySelector('a.pageNav-jump--next[href], a[rel="next"][href]');
-        nextUrl = next ? absoluteUrl(next.getAttribute('href'), nextUrl) : '';
-        doc = null;
-        if (nextUrl && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
+        const pageUrl = threadPageUrl(page);
+        let doc;
+        try {
+          if (new URL(pageUrl).pathname === location.pathname) {
+            doc = document;
+          } else {
+            const response = await fetch(pageUrl, { credentials: 'include', signal: controller.signal });
+            if (!response.ok) throw new Error(`Page request failed (${response.status})`);
+            const html = await response.text();
+            if (state.cancelScan || controller.signal.aborted) break;
+            doc = new DOMParser().parseFromString(html, 'text/html');
+          }
+          if (state.cancelScan || controller.signal.aborted) break;
+          updateThreadPageInfo(doc, pageUrl);
+          appendUniqueItems(state.items, extractFromDocument(doc, pageUrl), seenItems);
+          state.scannedPages++;
+        } catch (error) {
+          if (error?.name === 'AbortError' || state.cancelScan) break;
+          state.scanFailedPages++;
+          recordDiagnostic('scanFailures', `Whole-thread page ${page}`, error);
+        } finally {
+          doc = null;
+        }
+        updateScanStatus();
+        if (page < state.scanTotalPages && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
       }
-      if (nextUrl && visited.size >= 250) {
+      if (detectedPages > 250 && !state.cancelScan) {
         state.sourceLabel = 'Partial thread scan (250-page safety limit)';
         notify('Stopped at the 250-page safety limit. Use the page picker for later pages.', 6500);
+      } else if (state.scanFailedPages) {
+        state.sourceLabel = `Thread scan (${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'})`;
       }
     } catch (error) {
-      console.error('[SimpCity Gallery]', error);
-      recordDiagnostic('scanFailures', 'Whole-thread scan', error);
-      notify(`Gallery scan stopped: ${error.message}`, 6500);
+      if (error?.name !== 'AbortError') {
+        console.error('[SimpCity Gallery]', error);
+        recordDiagnostic('scanFailures', 'Whole-thread scan', error);
+        notify(`Gallery scan stopped: ${error.message}`, 6500);
+      }
     } finally {
       if (state.cancelScan && state.scannedPages) state.sourceLabel = `Partial thread scan (${state.scannedPages} pages)`;
+      else if (state.cancelScan) state.sourceLabel = 'Thread scan canceled';
+      state.scanController = null;
       state.scanning = false;
+      state.scanCanceling = false;
       state.cancelScan = false;
       render();
     }
@@ -3011,7 +3267,7 @@
   style.textContent = `
 
     /* ============================================================
-       DARKROOM  -  design system for SimpCity Thread Gallery 0.9.6
+       GALLERY UI  -  design system for SimpCity Thread Gallery 0.9.7
        Direction: full-bleed media canvas, floating instrument plate,
        mode-morphing dock. One restrained signal colour per theme.
        ============================================================ */
@@ -3039,8 +3295,8 @@
       --scg-success-soft:#0d2a22;
       --scg-warn:#e0b062;
       --scg-warn-soft:#2a2114;
-      --scg-danger:#ff7d96;
-      --scg-danger-soft:#2c1219;
+      --scg-danger:#f06b78;
+      --scg-danger-soft:#321316;
       --scg-shadow:0 18px 48px #00000094;
       --scg-shadow-sm:0 6px 18px #0000006b;
       --scg-focus:#7cc8ff;
@@ -3207,12 +3463,13 @@
       padding:6px 9px;border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-sm);
       background:var(--scg-surface-3);color:var(--scg-text);
       box-shadow:var(--scg-shadow-sm);
-      font-size:11px;font-weight:550;line-height:1.3;pointer-events:none;
+      font-size:11px;font-weight:550;line-height:1.3;white-space:normal;overflow-wrap:anywhere;pointer-events:none;
     }
     #${APP_ID} .scg-tip-end[data-tooltip]:hover:after,
     #${APP_ID} .scg-tip-end[data-tooltip]:focus-visible:after{left:auto;right:0;transform:none}
     #${APP_ID} .scg-tip-up[data-tooltip]:hover:after,
     #${APP_ID} .scg-tip-up[data-tooltip]:focus-visible:after{top:auto;bottom:calc(100% + 8px)}
+    #${APP_ID} .scg-lightbox [data-tooltip]:after{max-width:170px}
 
     /* Scrollbars */
     #${APP_ID} *{scrollbar-width:thin;scrollbar-color:var(--scg-line-strong) transparent}
@@ -3289,12 +3546,25 @@
     #${APP_ID} .scg-plate{
       position:relative;z-index:40;
       margin:12px 12px 0;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
-      background:var(--scg-surface);
-      box-shadow:var(--scg-shadow-sm);
+      border:1px solid color-mix(in srgb,#ffffff 16%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 60%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 42%,transparent));
+      box-shadow:0 14px 38px #00000052,
+        inset 0 1px 0 color-mix(in srgb,#ffffff 13%,transparent),
+        inset 0 -1px 0 color-mix(in srgb,#000000 14%,transparent);
+      backdrop-filter:blur(26px) saturate(160%);
+      -webkit-backdrop-filter:blur(26px) saturate(160%);
+      isolation:isolate;
     }
+    #${APP_ID} .scg-plate:before{
+      content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
+      background:linear-gradient(112deg,color-mix(in srgb,#ffffff 9%,transparent),transparent 34%,color-mix(in srgb,var(--scg-accent) 5%,transparent));
+    }
+    #${APP_ID} .scg-plate>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-header{
+      z-index:2; /* Keep header tooltips above the later-painted filter row. */
       display:grid;
       grid-template-columns:auto minmax(120px,1.1fr) minmax(180px,1.5fr) auto auto;
       align-items:center;gap:14px;
@@ -3334,7 +3604,7 @@
 
 
     /* ---- 6. Search + scan ------------------------------------- */
-    #${APP_ID} .scg-controls{display:flex;align-items:center;gap:10px;min-width:0}
+    #${APP_ID} .scg-controls{position:relative;display:flex;align-items:center;gap:10px;min-width:0}
     #${APP_ID} .scg-search{position:relative;display:block;flex:1;min-width:0}
     #${APP_ID} .scg-search>.scg-icon-well{
       position:absolute;z-index:2;top:50%;left:11px;transform:translateY(-50%);
@@ -3367,6 +3637,18 @@
     #${APP_ID} .scg-scan-actions button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
     #${APP_ID} .scg-scan-actions button .scg-icon{color:var(--scg-muted)}
     #${APP_ID} .scg-scan-actions button:hover:not(:disabled) .scg-icon{color:var(--scg-text)}
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger{
+      border-color:#c43a50;background:#8f2034;color:#ffffff;
+    }
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger .scg-icon{color:#ffd7de}
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:hover:not(:disabled),
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:focus-visible{
+      border-color:#ff637b;background:#c92f49;color:#ffffff;
+    }
+    #${APP_ID} .scg-scan-warning{
+      position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+      overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;
+    }
     #${APP_ID} .scg-scan-actions [data-action="thread"]{
       border-color:color-mix(in srgb,var(--scg-accent) 40%,transparent);
       background:var(--scg-accent-soft);color:var(--scg-accent);
@@ -3459,7 +3741,7 @@
       font-size:10.5px;font-weight:650;text-align:center;
       font-variant-numeric:tabular-nums;
     }
-    #${APP_ID} .scg-filters button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
+    #${APP_ID} .scg-filters button:hover:not(:disabled):not(.active){background:var(--scg-surface-3);color:var(--scg-text)}
     #${APP_ID} .scg-filters button.active{
       background:var(--scg-accent);color:var(--scg-accent-ink);
       box-shadow:var(--scg-shadow-sm);
@@ -3493,6 +3775,15 @@
       color:var(--scg-muted);font-size:11.5px;font-variant-numeric:tabular-nums;
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     }
+    #${APP_ID} .scg-reply-group-actions{display:none;align-items:center;gap:4px}
+    #${APP_ID}.grouped-replies .scg-reply-group-actions{display:inline-flex}
+    #${APP_ID} .scg-reply-group-actions button{
+      display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:5px 8px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface-2);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID} .scg-reply-group-actions button:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-reply-group-actions [data-action="expand-all"] .scg-icon{transform:rotate(180deg)}
     #${APP_ID} .scg-viewbar label{
       display:inline-flex;align-items:center;gap:7px;flex:none;
       color:var(--scg-muted);font-size:10.5px;font-weight:650;
@@ -3585,6 +3876,19 @@
     }
     #${APP_ID} .scg-refinebar button.active .scg-icon{color:var(--scg-accent)}
     #${APP_ID} .scg-refine-spacer{display:none}
+
+    /* Frost the plate's larger control wells without fading their content. */
+    #${APP_ID} .scg-plate .scg-search input,
+    #${APP_ID} .scg-plate .scg-scan-actions,
+    #${APP_ID} .scg-plate .scg-filters,
+    #${APP_ID} .scg-plate .scg-layout-switcher,
+    #${APP_ID} .scg-plate .scg-view-pagination,
+    #${APP_ID} .scg-plate .scg-refine-trigger:not(.active):not([aria-expanded="true"]){
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);
+    }
+    #${APP_ID} .scg-plate select{background-color:color-mix(in srgb,var(--scg-surface-2) 46%,transparent)}
+    #${APP_ID} .scg-plate select:hover:not(:disabled){background-color:color-mix(in srgb,var(--scg-surface-3) 58%,transparent)}
+    #${APP_ID} .scg-plate .scg-search input:focus{background:color-mix(in srgb,var(--scg-surface) 68%,transparent)}
 
 
     /* ---- 9. Canvas -------------------------------------------- */
@@ -3695,14 +3999,15 @@
       position:relative;overflow:hidden;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
       background:var(--scg-surface);
-      box-shadow:var(--scg-shadow-sm);
+      box-shadow:0 3px 12px #00000052;
+      contain:paint style;
       transition:transform .18s cubic-bezier(.2,.7,.3,1),border-color .18s,box-shadow .18s;
     }
     #${APP_ID}.compact .scg-card{border-radius:var(--scg-r-md)}
     #${APP_ID} .scg-card:hover{
       transform:translateY(-2px);
       border-color:var(--scg-line-strong);
-      box-shadow:var(--scg-shadow);
+      box-shadow:0 7px 20px #00000066;
     }
     #${APP_ID} .scg-card:focus-within{border-color:color-mix(in srgb,var(--scg-accent) 55%,var(--scg-line))}
     #${APP_ID} .scg-card.selected{
@@ -3727,10 +4032,9 @@
       padding:4px 8px;
       border:1px solid color-mix(in srgb,#ffffff 14%,transparent);
       border-radius:99px;
-      background:#0b0d10cc;color:#dfe4ea;
+      background:#0b0d10f2;color:#dfe4ea;
       font-size:10px;font-weight:600;
-      backdrop-filter:blur(10px);
-      box-shadow:0 3px 10px #00000059;
+      box-shadow:0 2px 7px #00000052;
     }
     #${APP_ID} .scg-badge b{
       color:#ffffff;font-size:9.5px;font-weight:700;
@@ -3751,8 +4055,8 @@
     #${APP_ID} .scg-select span{
       display:grid;place-items:center;width:30px;height:30px;
       border:1.5px solid #ffffffb8;border-radius:10px;
-      background:#0b0d10bf;backdrop-filter:blur(8px);
-      box-shadow:0 3px 12px #00000073;
+      background:#0b0d10f2;
+      box-shadow:0 2px 8px #00000066;
       transition:background .14s,border-color .14s;
     }
     #${APP_ID} .scg-select input:checked+span{background:var(--scg-accent);border-color:var(--scg-accent)}
@@ -3920,17 +4224,26 @@
 
     /* ---- 13. The dock (status / selection / downloads) --------- */
     #${APP_ID} .scg-activitybar{
-      position:absolute;z-index:30;left:50%;bottom:14px;transform:translateX(-50%);
-      display:flex;align-items:center;gap:10px;flex-wrap:nowrap;
-      width:min(1220px,calc(100% - 28px));
-      padding:8px 10px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-xl);
-      background:color-mix(in srgb,var(--scg-surface) 92%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(20px) saturate(130%);
-      transition:width .2s ease,padding .2s ease;
+      position:absolute;z-index:30;left:50%;bottom:18px;transform:translateX(-50%);
+      display:flex;align-items:center;gap:12px;flex-wrap:nowrap;
+      width:min(1240px,calc(100% - 36px));min-height:64px;
+      padding:11px 14px;
+      border:1px solid color-mix(in srgb,#ffffff 22%,var(--scg-line-strong));border-radius:18px;
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 52%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 34%,transparent));
+      box-shadow:0 20px 54px #00000070,
+        inset 0 1px 0 color-mix(in srgb,#ffffff 20%,transparent),
+        inset 0 -1px 0 color-mix(in srgb,#000000 18%,transparent);
+      backdrop-filter:blur(34px) saturate(180%);
+      -webkit-backdrop-filter:blur(34px) saturate(180%);
+      isolation:isolate;
     }
-    #${APP_ID}.activity-collapsed .scg-activitybar{width:min(760px,calc(100% - 28px));padding:5px 8px}
+    #${APP_ID} .scg-activitybar:before{
+      content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
+      background:linear-gradient(115deg,color-mix(in srgb,#ffffff 13%,transparent),transparent 38%,color-mix(in srgb,var(--scg-accent) 7%,transparent));
+    }
+    #${APP_ID} .scg-activitybar>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-activity-state{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 260px;padding-left:4px}
     #${APP_ID} .scg-activity-state>i{
@@ -3955,13 +4268,11 @@
       overflow:hidden;color:var(--scg-muted);font-size:11px;
       text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;
     }
-    #${APP_ID}.activity-collapsed .scg-activity-state span{display:none}
-
     #${APP_ID} .scg-activitybar button{
       display:inline-flex;align-items:center;justify-content:center;gap:7px;
-      min-height:34px;padding:7px 10px;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
-      background:var(--scg-surface-2);color:var(--scg-text-soft);
+      min-height:40px;padding:9px 12px;
+      border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);color:var(--scg-text-soft);
       font-size:12px;font-weight:550;cursor:pointer;white-space:nowrap;
       transition:background .14s,border-color .14s,color .14s;
     }
@@ -3986,7 +4297,19 @@
     #${APP_ID}.selecting .scg-selection-toggle .scg-icon{color:var(--scg-accent)}
 
     #${APP_ID} .scg-bulk-actions{display:none;align-items:center;gap:6px;min-width:0;flex:1}
-    #${APP_ID}.selecting .scg-bulk-actions{display:flex}
+    #${APP_ID}.selecting .scg-bulk-actions,
+    #${APP_ID}.downloading .scg-bulk-actions{display:flex}
+    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions{flex:0 0 auto}
+    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions>*:not([data-action="download-selected"]){display:none}
+    #${APP_ID} .scg-activitybar .cancel-download{
+      border-color:color-mix(in srgb,var(--scg-danger) 65%,transparent);
+      background:var(--scg-danger-soft);color:var(--scg-danger);
+    }
+    #${APP_ID} .scg-activitybar .cancel-download .scg-icon{color:var(--scg-danger)}
+    #${APP_ID} .scg-activitybar .cancel-download:hover:not(:disabled){
+      border-color:var(--scg-danger);background:color-mix(in srgb,var(--scg-danger-soft) 72%,var(--scg-danger));color:#ffffff;
+    }
+    #${APP_ID} .scg-activitybar .cancel-download:hover:not(:disabled) .scg-icon{color:#ffffff}
     #${APP_ID} .scg-bulk-label{
       flex:none;color:var(--scg-muted);
       font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
@@ -4000,11 +4323,13 @@
 
     #${APP_ID} .scg-progress{position:relative;display:flex;min-width:220px;max-width:440px;flex:1 1 300px}
     #${APP_ID}.selecting .scg-progress{display:none}
+    #${APP_ID}.selecting.has-downloads .scg-progress,
+    #${APP_ID}.selecting.downloading .scg-progress{display:flex;min-width:150px;max-width:320px;flex:1 1 220px}
     #${APP_ID} .scg-progress-summary{
       display:flex !important;align-items:center;gap:10px;width:100%;min-width:0;
-      min-height:34px;padding:6px 11px !important;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
-      background:var(--scg-surface-2);color:var(--scg-text-soft);cursor:pointer;
+      min-height:40px;padding:8px 12px !important;
+      border:1px solid color-mix(in srgb,#ffffff 10%,var(--scg-line));border-radius:13px;
+      background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);color:var(--scg-text-soft);cursor:pointer;
     }
     #${APP_ID} .scg-progress-track{
       position:relative;display:block;height:6px;flex:1;min-width:70px;overflow:hidden;
@@ -4020,29 +4345,27 @@
       color:var(--scg-muted);font-size:11.5px;text-align:right;
       text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;
     }
-    #${APP_ID}.activity-collapsed .scg-progress{min-width:120px;max-width:260px;flex:0 1 260px}
-    #${APP_ID}.activity-collapsed .scg-progress-track{display:none}
-
-    #${APP_ID} .scg-activity-toggle{flex:none;min-width:34px;padding:7px !important}
-    #${APP_ID} .scg-activity-toggle span{display:none}
-    #${APP_ID} .scg-activity-toggle .scg-icon{transition:transform .18s ease}
-    #${APP_ID}.activity-collapsed .scg-activity-toggle .scg-icon{transform:rotate(180deg)}
-
     /* Download queue popover */
     #${APP_ID} .scg-download-popover{
       display:none;position:absolute;z-index:320;right:0;bottom:calc(100% + 10px);
       width:min(520px,calc(100vw - 32px));max-height:min(540px,66vh);
       overflow:hidden;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
-      background:var(--scg-surface);color:var(--scg-text);
-      box-shadow:var(--scg-shadow);
+      border:1px solid color-mix(in srgb,#ffffff 14%,var(--scg-line-strong));border-radius:var(--scg-r-lg);
+      background:linear-gradient(145deg,
+        color-mix(in srgb,var(--scg-surface) 94%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 90%,transparent));
+      color:var(--scg-text);
+      box-shadow:0 18px 48px #00000080,
+        inset 0 1px 0 color-mix(in srgb,#ffffff 8%,transparent);
+      backdrop-filter:blur(20px) saturate(145%);
+      -webkit-backdrop-filter:blur(20px) saturate(145%);
+      isolation:isolate;
     }
-    #${APP_ID} .scg-progress.expanded .scg-download-popover,
-    #${APP_ID} .scg-progress:focus-within .scg-download-popover{display:block}
+    #${APP_ID} .scg-progress.expanded .scg-download-popover{display:block}
     #${APP_ID} .scg-download-popover>header{
       display:flex;align-items:center;justify-content:space-between;gap:12px;
       padding:11px 13px;
-      border-bottom:1px solid var(--scg-line);background:var(--scg-surface-2);
+      border-bottom:1px solid var(--scg-line);background:color-mix(in srgb,var(--scg-surface-2) 92%,transparent);
     }
     #${APP_ID} .scg-download-popover>header b{font-size:13px}
     #${APP_ID} .scg-download-popover>header>div{display:flex;align-items:center;gap:5px}
@@ -4050,7 +4373,7 @@
       display:inline-flex;align-items:center;gap:6px;
       min-height:30px;padding:5px 9px !important;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
-      background:var(--scg-surface);color:var(--scg-text-soft);
+      background:color-mix(in srgb,var(--scg-surface) 94%,transparent);color:var(--scg-text-soft);
       font-size:11px;cursor:pointer;
     }
     #${APP_ID} .scg-download-popover>header button:hover{background:var(--scg-surface-3);color:var(--scg-text)}
@@ -4059,7 +4382,7 @@
       color:var(--scg-muted);font-size:11.5px;font-variant-numeric:tabular-nums;
     }
     #${APP_ID} .scg-download-jobs{max-height:min(420px,48vh);overflow:auto;padding:8px}
-    #${APP_ID} .scg-download-job{padding:9px 10px;border-radius:var(--scg-r-md)}
+    #${APP_ID} .scg-download-job{padding:9px 10px;border-radius:var(--scg-r-md);contain:content}
     #${APP_ID} .scg-download-job+.scg-download-job{border-top:1px solid var(--scg-line)}
     #${APP_ID} .scg-download-job>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}
     #${APP_ID} .scg-download-job b{
@@ -4216,6 +4539,30 @@
     #${APP_ID} .scg-confirm-icon .scg-icon{width:22px;height:22px}
     #${APP_ID} .scg-confirm-dialog h2{margin:0;color:var(--scg-text);font-size:16.5px;font-weight:650}
     #${APP_ID} .scg-confirm-dialog p{margin:9px 0 20px;color:var(--scg-muted);font-size:12.5px;line-height:1.55}
+    #${APP_ID} .scg-confirm-preference{
+      display:flex;align-items:center;justify-content:center;gap:8px;
+      margin:-8px 0 18px;color:var(--scg-text-soft);font-size:12px;cursor:pointer;
+    }
+    #${APP_ID} .scg-reply-toggle{
+      display:inline-flex;align-items:center;gap:5px;flex:none;
+      min-height:30px;padding:5px 8px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID} .scg-reply-select{
+      display:none;align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface);color:var(--scg-text-soft);font-size:11px;cursor:pointer;
+    }
+    #${APP_ID}.selecting .scg-reply-select{display:inline-flex}
+    #${APP_ID} .scg-reply-select input{width:16px;height:16px;margin:0;accent-color:var(--scg-accent);cursor:pointer}
+    #${APP_ID} .scg-reply-select .scg-icon{color:var(--scg-accent)}
+    #${APP_ID} .scg-reply-toggle:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-reply-toggle .scg-icon{transition:transform .18s ease}
+    #${APP_ID} .scg-reply-toggle[aria-expanded="false"] .scg-icon{transform:rotate(-90deg)}
+    #${APP_ID} .scg-reply-group.collapsed>header{border-bottom:0}
+    #${APP_ID} .scg-collapsed-status{color:var(--scg-accent);font-size:10px;font-style:normal;font-weight:650;text-transform:uppercase;letter-spacing:.06em}
+    #${APP_ID} .scg-confirm-preference[hidden]{display:none}
+    #${APP_ID} .scg-confirm-preference input{accent-color:var(--scg-accent)}
     #${APP_ID} .scg-confirm-dialog>div:last-child{display:flex;justify-content:center;gap:9px}
     #${APP_ID} .scg-confirm-dialog button{
       display:inline-flex;align-items:center;justify-content:center;gap:7px;
@@ -4260,11 +4607,15 @@
       display:flex;align-items:center;gap:14px;min-width:0;
       width:calc(100% - 24px);margin:12px;
       padding:8px 10px 8px 14px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
-      background:color-mix(in srgb,var(--scg-surface) 88%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(22px) saturate(135%);
-      transition:opacity .26s ease,transform .26s ease;
+      border:1px solid color-mix(in srgb,#ffffff 15%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 62%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 44%,transparent));
+      box-shadow:0 12px 34px #0000005c,inset 0 1px 0 color-mix(in srgb,#ffffff 10%,transparent);
+      backdrop-filter:blur(28px) saturate(160%);
+      -webkit-backdrop-filter:blur(28px) saturate(160%);
+      visibility:visible;will-change:opacity,transform;
+      transition:opacity .28s cubic-bezier(.2,.7,.3,1),transform .28s cubic-bezier(.2,.7,.3,1),visibility 0s;
     }
     #${APP_ID} .scg-viewer-identity{display:flex;align-items:center;gap:14px;min-width:0;flex:1}
     #${APP_ID} .scg-viewer-identity>b{
@@ -4367,13 +4718,23 @@
       border-top-color:var(--scg-accent);border-radius:99px;
       animation:scg-viewer-spin .75s linear infinite;pointer-events:none;
     }
+    @keyframes scg-viewer-loading-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
     @keyframes scg-viewer-spin{to{transform:rotate(360deg)}}
-    #${APP_ID} .scg-viewer-loading{display:flex;align-items:center;gap:11px;color:var(--scg-muted);font-size:12px}
+    #${APP_ID} .scg-viewer-loading{
+      display:flex;align-items:center;gap:11px;padding:9px 12px;
+      border:1px solid color-mix(in srgb,var(--scg-line-strong) 72%,transparent);border-radius:99px;
+      background:color-mix(in srgb,var(--scg-surface) 44%,transparent);
+      color:var(--scg-muted);font-size:12px;
+      backdrop-filter:blur(14px) saturate(145%);
+      -webkit-backdrop-filter:blur(14px) saturate(145%);
+      animation:scg-viewer-loading-in .2s ease both;
+    }
     #${APP_ID} .scg-viewer-loading i{
-      width:19px;height:19px;
+      display:block;width:19px;height:19px;flex:none;
       border:2px solid color-mix(in srgb,var(--scg-text) 20%,transparent);
       border-top-color:var(--scg-accent);border-radius:99px;
       animation:scg-viewer-spin .75s linear infinite;
+      transform-origin:center;will-change:transform;
     }
     #${APP_ID} .scg-viewer-error{
       max-width:470px;padding:24px;
@@ -4471,11 +4832,15 @@
       display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;
       width:calc(100% - 24px);margin:0 12px 12px;
       padding:8px 10px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
-      background:color-mix(in srgb,var(--scg-surface) 88%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(22px) saturate(135%);
-      transition:opacity .26s ease,transform .26s ease;
+      border:1px solid color-mix(in srgb,#ffffff 15%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 62%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 44%,transparent));
+      box-shadow:0 12px 34px #0000005c,inset 0 1px 0 color-mix(in srgb,#ffffff 10%,transparent);
+      backdrop-filter:blur(28px) saturate(160%);
+      -webkit-backdrop-filter:blur(28px) saturate(160%);
+      visibility:visible;will-change:opacity,transform;
+      transition:opacity .28s cubic-bezier(.2,.7,.3,1),transform .28s cubic-bezier(.2,.7,.3,1),visibility 0s;
     }
     #${APP_ID} .scg-viewer-strip{
       display:flex;align-items:center;gap:7px;min-width:0;
@@ -4512,9 +4877,15 @@
       background:var(--scg-surface-3);color:var(--scg-text);border-color:var(--scg-line-strong);
     }
 
-    /* Idle chrome fade: only when the details rail is closed. */
-    #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-viewer-topbar{opacity:0;pointer-events:none;transform:translateY(-14px)}
-    #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-viewer-footer{opacity:0;pointer-events:none;transform:translateY(14px)}
+    /* The translucent viewer chrome yields to the media after inactivity. */
+    #${APP_ID} .scg-lightbox.viewer-idle .scg-viewer-topbar{
+      opacity:0;visibility:hidden;pointer-events:none;transform:translate3d(0,-18px,0);
+      transition:opacity .28s cubic-bezier(.4,0,1,1),transform .28s cubic-bezier(.4,0,1,1),visibility 0s .28s;
+    }
+    #${APP_ID} .scg-lightbox.viewer-idle .scg-viewer-footer{
+      opacity:0;visibility:hidden;pointer-events:none;transform:translate3d(0,18px,0);
+      transition:opacity .28s cubic-bezier(.4,0,1,1),transform .28s cubic-bezier(.4,0,1,1),visibility 0s .28s;
+    }
     #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-nav{opacity:0;pointer-events:none}
 
 
@@ -4535,9 +4906,9 @@
       #${APP_ID} .scg-filter-panel{padding:0 10px 9px;gap:8px}
       #${APP_ID} .scg-viewbar{flex-basis:100%;justify-content:flex-start}
       #${APP_ID} .scg-view-summary{margin-right:auto}
-      #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 118px}
+      #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 136px}
       #${APP_ID} .scg-activitybar{width:calc(100% - 20px);bottom:10px;flex-wrap:wrap}
-      #${APP_ID} .scg-top{right:20px;bottom:104px}
+      #${APP_ID} .scg-top{right:20px;bottom:122px}
       #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:3 var(--scg-masonry-width,280px)}
       #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:4 var(--scg-masonry-compact-width,195px)}
       #${APP_ID} .scg-settings-grid{grid-template-columns:1fr}
@@ -4589,8 +4960,8 @@
       }
       #${APP_ID} .scg-refinebar{grid-template-columns:1fr}
       #${APP_ID} .scg-menu{position:fixed;right:8px;left:auto;width:min(280px,calc(100vw - 16px))}
-      #${APP_ID} .scg-scroll{inset:8px 8px 0;padding:12px 10px 132px;border-radius:var(--scg-r-md) var(--scg-r-md) 0 0}
-      #${APP_ID} .scg-top{right:14px;bottom:118px;padding:8px 12px}
+      #${APP_ID} .scg-scroll{inset:8px 8px 0;padding:12px 10px 160px;border-radius:var(--scg-r-md) var(--scg-r-md) 0 0}
+      #${APP_ID} .scg-top{right:14px;bottom:146px;padding:8px 12px}
       #${APP_ID} .scg-top>span{display:none}
       #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:2 var(--scg-masonry-width,280px);column-gap:8px}
       #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:2 var(--scg-masonry-compact-width,195px);column-gap:8px}
@@ -4615,14 +4986,16 @@
       #${APP_ID}[data-layout="feed"] .scg-skeleton{display:block;height:auto}
       #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:182px}
       #${APP_ID} .scg-badge span{display:none}
-      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);bottom:8px;gap:7px;padding:7px 8px;border-radius:var(--scg-r-lg)}
+      #${APP_ID} .scg-activitybar{width:calc(100% - 16px);min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px}
       #${APP_ID} .scg-activity-state{flex:1 1 100%}
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
       #${APP_ID} .scg-progress-text{max-width:130px}
       #${APP_ID} .scg-selection-toggle>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions{flex-wrap:wrap;flex-basis:100%}
+      #${APP_ID}.selecting .scg-bulk-actions,
+      #${APP_ID}.downloading .scg-bulk-actions{flex-wrap:wrap;flex-basis:100%}
       #${APP_ID}.selecting .scg-bulk-actions button>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions .scg-primary>span{display:inline}
+      #${APP_ID}.selecting .scg-bulk-actions .scg-primary>span,
+      #${APP_ID}.downloading .scg-bulk-actions .scg-primary>span{display:inline}
       #${APP_ID} .scg-download-popover{position:fixed;right:8px;left:8px;bottom:76px;width:auto;max-height:62vh}
       #${APP_ID} .scg-download-job>div:first-child{align-items:flex-start;flex-direction:column;gap:3px}
       #${APP_ID} .scg-diag-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -4665,6 +5038,8 @@
       #${APP_ID} .scg-viewer-details{max-height:none}
       #${APP_ID} .scg-viewer-shortcuts{display:none}
       #${APP_ID} .scg-viewer-thumb{width:44px;height:44px}
+      #${APP_ID} .scg-download-popover{max-height:52vh}
+      #${APP_ID} .scg-download-jobs{max-height:30vh}
     }
 
     /* ---- 20. Touch targets ------------------------------------- */
@@ -4676,6 +5051,11 @@
       #${APP_ID} .scg-select,#${APP_ID} .scg-select span{width:36px;height:36px}
       #${APP_ID} .scg-viewer-thumb{min-height:0}
       #${APP_ID} [data-tooltip]:hover:after{display:none}
+      #${APP_ID} .scg-scan-warning{
+        position:static;width:auto;height:auto;padding:5px 8px;margin:0;
+        overflow:visible;clip:auto;white-space:normal;
+        color:var(--scg-muted);font-size:10.5px;line-height:1.35;
+      }
     }
 
     /* ---- 21. Reduced motion ------------------------------------ */
@@ -4688,6 +5068,10 @@
         transition-delay:0s !important;
       }
       #${APP_ID} .scg-scroll{scroll-behavior:auto}
+      #${APP_ID} .scg-viewer-loading i,
+      #${APP_ID} .scg-lightbox-stage.viewer-buffering:before{
+        animation:none !important;border-color:var(--scg-accent);opacity:.72;
+      }
       #${APP_ID} .scg-card:hover,#${APP_ID} .scg-viewer-thumb:hover,
       #scg-launch:hover,#${APP_ID} .scg-embed-placeholder button:hover{transform:none}
       #${APP_ID} .scg-lightbox .scg-nav:hover{transform:translateY(-50%)}
@@ -4705,20 +5089,20 @@
 
   const launch = document.createElement('button');
   launch.id = 'scg-launch';
-  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Darkroom Â· v${APP_VERSION}</small></span>`;
+  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Media browser · v${APP_VERSION}</small></span>`;
   launch.setAttribute('aria-label', 'Open SimpCity thread gallery');
   document.body.appendChild(launch);
 
   function refreshLaunchButton() {
     const count = state.items.filter(isMediaItem).length;
     const detail = launch.querySelector('[data-launch-detail]');
-    if (detail) detail.textContent = count ? `Darkroom Â· ${count.toLocaleString()} indexed` : `Darkroom Â· v${APP_VERSION}`;
+    if (detail) detail.textContent = count ? `Media browser · ${count.toLocaleString()} indexed` : `Media browser · v${APP_VERSION}`;
     launch.setAttribute('aria-label', count ? `Open SimpCity thread gallery, ${count} media items indexed` : 'Open SimpCity thread gallery');
   }
 
   const app = document.createElement('section');
   app.id = APP_ID;
-  app.setAttribute('data-ui', 'darkroom');
+  app.setAttribute('data-ui', 'gallery');
   app.setAttribute('role', 'dialog');
   app.setAttribute('aria-modal', 'true');
   app.setAttribute('aria-label', 'SimpCity Thread Gallery');
@@ -4727,7 +5111,7 @@
       <header class="scg-header">
         <div class="scg-brand">
           <div class="scg-brand-mark" aria-hidden="true">${icon('gallery')}</div>
-          <div><b>Gallery</b><small>Darkroom</small></div>
+          <div><b>Gallery</b><small>Media browser</small></div>
         </div>
         <div class="scg-thread-context">
           <h1 data-thread-title>Thread gallery</h1>
@@ -4738,8 +5122,9 @@
           <div class="scg-scan-actions" role="group" aria-label="Scan sources">
             <button data-action="page" data-tooltip="Index the page you are on">${iconWell('page')}<span>This page</span></button>
             <span class="scg-source-page"><select data-source-page aria-label="Thread page to load"></select><button data-action="load-source-page" data-tooltip="Load the selected thread page" aria-label="Load the selected thread page">${iconWell('download')}</button></span>
-            <button data-action="thread" data-tooltip="Index every page of this thread">${iconWell('scan')}<span>Scan thread</span></button>
+            <button class="scg-scan-thread-danger scg-tip-end" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
           </div>
+          <span class="scg-scan-warning" id="scg-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
         </nav>
         <div class="scg-header-actions">
           <button data-action="filters-toggle" data-tooltip="Hide filters" aria-expanded="true" aria-controls="scg-filter-panel" aria-label="Hide filters">${iconWell('chevron')}<span>Filters</span></button>
@@ -4769,6 +5154,10 @@
         </div>
         <div class="scg-viewbar">
           <span class="scg-view-summary" role="status" aria-live="polite">0 matched</span>
+          <span class="scg-reply-group-actions" role="group" aria-label="Reply group visibility">
+            <button data-action="collapse-all" data-tooltip="Collapse all reply groups in the filtered results">${iconWell('chevron')}<span>Collapse All</span></button>
+            <button data-action="expand-all" data-tooltip="Expand all reply groups in the filtered results">${iconWell('chevron')}<span>Expand All</span></button>
+          </span>
           <div class="scg-layout-switcher" role="group" aria-label="Gallery layout">
             <button data-layout-mode="masonry" data-tooltip="Masonry layout (L)" aria-pressed="true">${iconWell('masonry')}<span>Masonry</span></button>
             <button data-layout-mode="grid" data-tooltip="Uniform grid layout (L)" aria-pressed="false">${iconWell('grid')}<span>Grid</span></button>
@@ -4794,7 +5183,7 @@
             <button data-action="view-next" class="scg-tip-end" data-tooltip="Next result page" aria-label="Next result page">${iconWell('next')}<span>Next</span></button>
           </span>
           <label class="scg-size-control"><span>Media size</span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size"><output data-card-scale-value>100%</output></label>
-          <label>Per view <select data-page-size><option value="40">40</option><option value="60">60</option><option value="100">100</option></select></label>
+          <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${size}</option>`).join('')}</select></label>
         </div>
       </section>
     </div>
@@ -4820,17 +5209,17 @@
             <div class="scg-download-jobs"></div>
           </aside>
         </div>
-        <button class="scg-activity-toggle scg-tip-up scg-tip-end" data-action="activity-toggle" data-tooltip="Collapse activity bar" aria-expanded="true" aria-label="Collapse activity bar">${iconWell('chevron')}<span>Collapse activity</span></button>
       </footer>
       <button class="scg-top scg-tip-up scg-tip-end" data-tooltip="Back to the top of the gallery">${iconWell('up')}<span>Top</span></button>
     </div>
-    <div class="scg-lightbox" role="dialog" aria-modal="true" aria-label="Media viewer"></div>
+    <div class="scg-lightbox" role="dialog" aria-modal="true" aria-label="Media viewer" tabindex="-1"></div>
     <div class="scg-settings-panel" role="dialog" aria-modal="true" aria-label="Settings and diagnostics">
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered panel state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-activity-collapsed><span>Keep the activity bar compact</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
+          <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
           <section class="scg-settings-card"><h3>${icon('upload')} Backup and restore</h3><p>Export preferences as JSON or restore a previous backup.</p><label class="scg-settings-check"><input type="checkbox" data-export-history><span>Include download history. This contains thread and media references.</span></label><div class="scg-settings-actions"><button data-action="export-settings">${iconWell('download')}<span>Export</span></button><button data-action="import-settings">${iconWell('upload')}<span>Import</span></button><input class="scg-settings-file" data-settings-file type="file" accept="application/json,.json"></div></section>
           <section class="scg-settings-card full"><h3>${icon('info')} Diagnostics</h3><p>A local, URL-scrubbed summary for troubleshooting. Nothing is transmitted automatically.</p><div class="scg-diag-grid"><div class="scg-diag-stat"><span>Version</span><b data-diag-version></b></div><div class="scg-diag-stat"><span>Thread pages</span><b data-diag-pages></b></div><div class="scg-diag-stat"><span>Indexed items</span><b data-diag-items></b></div><div class="scg-diag-stat"><span>Download history</span><b data-diag-history></b></div><div class="scg-diag-stat"><span>Resolver failures</span><b data-diag-resolvers></b></div><div class="scg-diag-stat"><span>Download failures</span><b data-diag-downloads></b></div><div class="scg-diag-stat"><span>Scan failures</span><b data-diag-scans></b></div><div class="scg-diag-stat"><span>Storage</span><b data-diag-storage></b></div></div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="copy-debug">${iconWell('copy')}<span>Copy debug report</span></button><button data-action="clear-diagnostics">${iconWell('reset')}<span>Clear diagnostics</span></button></div></section>
@@ -4840,7 +5229,7 @@
         <footer class="scg-settings-foot"><span>SimpCity Thread Gallery <b>v${APP_VERSION}</b></span><span>Settings remain on this device unless you export them.</span></footer>
       </section>
     </div>
-    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
+    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><label class="scg-confirm-preference" data-confirm-preference hidden><input type="checkbox"><span></span></label><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
   document.body.appendChild(app);
   const toast = document.createElement('div');
   toast.id = 'scg-gallery-toast';
@@ -4870,6 +5259,8 @@
     app.classList.remove('open');
     document.documentElement.style.overflow = '';
     state.cancelScan = true;
+    state.scanCanceling = state.scanning;
+    state.scanController?.abort();
     closeLightbox();
     releaseRenderedMedia();
     state.renderedItems = [];
@@ -4903,6 +5294,12 @@
   app.querySelector('[data-host-filter]').onchange = event => commitState({ hostFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-group-by]').onchange = event => commitState({ groupBy: event.target.value, viewPage: 1 }, { persist: true });
   app.querySelector('[data-selected-only]').onclick = () => commitState({ selectedOnly: !state.selectedOnly, viewPage: 1 });
+  app.querySelector('[data-action="collapse-all"]').onclick = () => {
+    if (setReplyGroupsCollapsed(visibleItems(), true)) render();
+  };
+  app.querySelector('[data-action="expand-all"]').onclick = () => {
+    if (setReplyGroupsCollapsed(visibleItems(), false)) render();
+  };
   app.querySelector('[data-action="reset-filters"]').onclick = () => {
     app.querySelector('[data-search]').value = '';
     commitState({
@@ -4911,11 +5308,8 @@
     }, { persist: true });
   };
   app.querySelector('[data-action="selection-mode"]').onclick = () => {
-    if (state.downloading) return notify('The bulk download is still running.');
     if (state.selectionMode) {
-      state.selectionMode = false;
-      state.selected.clear();
-      state.selectedOnly = false;
+      exitSelectionMode();
     } else {
       state.selectionMode = true;
     }
@@ -4934,9 +5328,6 @@
     const current = Math.max(0, THEME_MODES.indexOf(state.theme));
     commitState({ theme: THEME_MODES[(current + 1) % THEME_MODES.length] }, { persist: true, shellOnly: true });
   };
-  app.querySelector('[data-action="activity-toggle"]').onclick = () => {
-    commitState({ activityCollapsed: !state.activityCollapsed }, { persist: true, shellOnly: true });
-  };
   const overflowTrigger = app.querySelector('[data-action="overflow"]');
   const overflowMenu = app.querySelector('.scg-menu');
   const refineTrigger = app.querySelector('[data-action="refine-toggle"]');
@@ -4954,7 +5345,7 @@
     if (event.target.closest?.('.scg-menu-wrap, .scg-refine-wrap')) return;
     closeDisclosures();
   }, true);
-  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search Â· L cycles layout Â· Shift+A selects this view Â· Shift+G opens or closes Â· Esc closes. Viewer: â† â†’ navigate Â· wheel or + âˆ’ zoom Â· 0 fit Â· I details Â· F fullscreen Â· Space play or pause Â· D download Â· S select.', 11000);
+  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search · L cycles layout · Shift+A selects this view · Shift+G opens or closes · Esc closes. Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.', 11000);
   app.querySelector('[data-action="shortcuts"]').addEventListener('click', () => closeDisclosures());
   app.querySelector('[data-action="settings"]').onclick = () => {
     closeDisclosures();
@@ -4973,9 +5364,6 @@
   app.querySelector('[data-setting-filters-collapsed]').onchange = event => {
     commitState({ filtersCollapsed: event.target.checked }, { persist: true, shellOnly: true });
   };
-  app.querySelector('[data-setting-activity-collapsed]').onchange = event => {
-    commitState({ activityCollapsed: event.target.checked }, { persist: true, shellOnly: true });
-  };
   app.querySelector('[data-setting-archive-layout]').onchange = event => {
     commitState({ archiveLayout: ['flat', 'page', 'page-author', 'reply'].includes(event.target.value) ? event.target.value : DEFAULT_SETTINGS.archiveLayout }, { persist: true, shellOnly: true });
   };
@@ -4993,6 +5381,9 @@
   };
   app.querySelector('[data-setting-dedupe-content]').onchange = event => {
     commitState({ dedupeContent: event.target.checked }, { persist: true, shellOnly: true });
+  };
+  app.querySelector('[data-setting-warn-large-scan]').onchange = event => {
+    commitState({ warnLargeThreadScan: event.target.checked }, { persist: true, shellOnly: true });
   };
   app.querySelector('.scg-settings-panel').onclick = event => {
     if (event.target.classList.contains('scg-settings-panel')) controllers.settings.close();
@@ -5016,7 +5407,7 @@
   app.querySelector('[data-action="select-images"]').onclick = () => selectItems(state.items.filter(item => item.type === 'image'));
   app.querySelector('[data-action="select-videos"]').onclick = () => selectItems(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
   app.querySelector('[data-action="clear-selection"]').onclick = () => {
-    state.selected.clear();
+    clearSelection();
     if (state.selectedOnly) render();
     else updateSelectionUi();
   };
@@ -5030,13 +5421,13 @@
     event.stopPropagation();
     state.downloadDetailsOpen = false;
     updateDownloadUi();
+    app.querySelector('[data-action="download-details"]')?.focus({ preventScroll: true });
   };
   app.querySelector('[data-action="clear-download-history"]').onclick = async event => {
     event.stopPropagation();
-    if (!await confirmAction({ title: 'Clear download history?', message: 'This removes SAVED markers only. Existing files will stay in your Downloads folder.', confirmLabel: 'Clear history', danger: true })) return;
-    state.downloadHistory = {};
-    persistDownloadHistory();
-    updateDownloadedIndicators();
+    if (state.downloading) return notify('Finish or cancel the active download before clearing its history.', 5200);
+    if (!await confirmAction({ title: 'Clear download history?', message: 'This removes SAVED and LEGACY markers plus completed queue entries. Existing files will stay in your Downloads folder.', confirmLabel: 'Clear history', danger: true })) return;
+    if (!clearDownloadHistory()) return;
     notify('Download history cleared. Existing files were not deleted.');
   };
   const scrollArea = app.querySelector('.scg-scroll');
@@ -5066,11 +5457,25 @@
   scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
   app.querySelector('.scg-grid').onclick = event => {
     const items = state.renderedItems;
+    const replySelect = event.target.closest('[data-reply-select]');
+    if (replySelect) {
+      setReplySelected(replySelect.dataset.replySelect, replySelect.checked);
+      if (state.selectedOnly) render();
+      else updateSelectionUi();
+      return;
+    }
+    const replyToggle = event.target.closest('[data-reply-toggle]');
+    if (replyToggle) {
+      setReplyCollapsed(replyToggle.dataset.replyToggle, replyToggle.getAttribute('aria-expanded') === 'true');
+      render();
+      return;
+    }
     const selection = event.target.closest('[data-select]');
     if (selection) {
       const item = items[Number(selection.dataset.select)];
       setSelected(item, selection.checked);
-      updateSelectionUi();
+      if (state.selectedOnly) render();
+      else updateSelectionUi();
       return;
     }
     const player = event.target.closest('[data-load-player]');
