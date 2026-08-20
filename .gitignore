@@ -1,0 +1,21 @@
+# Keep one canonical userscript in the repository.
+SimpCity-Thread-Gallery.user..js
+SimpCity-Thread-Gallery-v*.js
+SimpCity-Thread-Gallery-v*.user.js
+SimpCity Thread Gallery*.js
+
+# Release mirrors and packages belong in Git tags/Releases, not the working tree.
+*.txt
+*.zip
+
+# Discourage ad-hoc release filenames.
+*final*.js
+*fixed*.js
+*latest*.js
+*preview-final*.js
+
+# Local/editor noise.
+.DS_Store
+Thumbs.db
+*.log
+
