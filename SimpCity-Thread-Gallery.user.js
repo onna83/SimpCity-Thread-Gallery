@@ -1618,7 +1618,7 @@
     const visible = state.renderedItems;
     app.querySelectorAll('.scg-card[data-index]').forEach(cardNode => {
       const item = visible[Number(cardNode.dataset.index)];
-      const checked = Boolean(item && state.selected.has(item.selectionKey));
+      const checked = Boolean(item && isDownloadableMedia(item) && state.selected.has(item.selectionKey));
       cardNode.classList.toggle('selected', state.selectionMode && checked);
       const input = cardNode.querySelector('[data-select]');
       if (input) input.checked = checked;
@@ -2334,7 +2334,7 @@
       const host = itemSourceHost(item);
       const authorMatch = state.authorFilter === 'all' || item.author === state.authorFilter;
       const hostMatch = state.hostFilter === 'all' || host === state.hostFilter;
-      const selectedMatch = !state.selectedOnly || state.selected.has(item.selectionKey);
+      const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
       return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
     });
 

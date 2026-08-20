@@ -320,6 +320,7 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /data-reply-select/);
   assert.match(source, /data-reply-selection-count/);
   assert.match(source, /iconWell\('select'\)/);
+  assert.match(source, /selectedMatch = !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
 });
 
 test('dock preserves active queue status and cancellation across selection states', () => {
