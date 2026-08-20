@@ -451,6 +451,21 @@ test('gallery scrolling keeps native momentum and throttles visual scroll work',
   assert.doesNotMatch(source, /scrollArea\.addEventListener\('wheel'/);
 });
 
+test('viewer loader and translucent chrome have resilient motion states', () => {
+  assert.match(source, /\.scg-viewer-loading i\{[\s\S]*?display:block;[\s\S]*?animation:scg-viewer-spin/);
+  assert.match(source, /scg-viewer-loading i,[\s\S]*?viewer-buffering:before\{[\s\S]*?animation:none !important;border-color:var\(--scg-accent\)/);
+  assert.match(source, /\.scg-viewer-topbar\{[\s\S]*?var\(--scg-surface\) 62%,transparent/);
+  assert.match(source, /\.scg-viewer-footer\{[\s\S]*?var\(--scg-surface\) 62%,transparent/);
+  assert.match(source, /\.scg-lightbox\.viewer-idle \.scg-viewer-topbar/);
+  assert.match(source, /\.scg-lightbox\.viewer-idle \.scg-viewer-footer/);
+  assert.doesNotMatch(source, /viewer-idle\.details-hidden \.scg-viewer-(?:topbar|footer)/);
+  assert.match(source, /viewerChromeEngaged\(box\)/);
+  assert.match(source, /active\.matches\(':focus-visible'\)/);
+  assert.match(source, /box\.onfocusin = wakeViewerChrome/);
+  assert.match(source, /class="scg-lightbox"[^>]*tabindex="-1"/);
+  assert.match(source, /if \(!wasOpen\) box\.focus\(\{ preventScroll: true \}\)/);
+});
+
 test('display labels are free of known mojibake sequences', () => {
   assert.doesNotMatch(source, /Ã|Â|â|�/);
   assert.match(source, /Darkroom · v\$\{APP_VERSION\}/);

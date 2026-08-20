@@ -16,6 +16,7 @@ Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or pu
 - Kept selection and active-download dock states usable together, including cancellation after selection mode is closed.
 - Removed the dock's fragile compact/collapse state and replaced it with a taller, more translucent glass dock plus a matching frosted instrument plate and control wells, with tighter dock corners.
 - Smoothed gallery motion with native touch momentum, contained overscroll, animation-frame-throttled scroll UI, eased view-page jumps, and lighter dock compositing while scrolling.
+- Repaired the viewer loading indicator, added an intentional static reduced-motion state, and made the translucent top controls and filmstrip reliably auto-hide after inactivity without hiding focused controls.
 - Repaired corrupted separators, dimensions, ellipses, and keyboard-help glyphs, and strengthened the full-thread action's red danger treatment.
 - Fixed long scan-warning tooltip wrapping and made the download-queue Close action dismiss reliably while returning focus to its trigger.
 - Made Clear history remove persisted SAVED/LEGACY markers and completed queue rows, while guarding against active-download races.

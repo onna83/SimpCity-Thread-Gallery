@@ -2881,14 +2881,30 @@
 
   let viewerChromeTimer = 0;
 
+  function viewerChromeEngaged(box) {
+    const active = document.activeElement;
+    const keyboardFocused = active instanceof Element && active.matches(':focus-visible');
+    return [...box.querySelectorAll('.scg-viewer-topbar, .scg-viewer-footer')].some(panel =>
+      panel.matches(':hover') || (keyboardFocused && panel.contains(active)));
+  }
+
+  function armViewerChromeIdle(box, delay = 2600) {
+    clearTimeout(viewerChromeTimer);
+    viewerChromeTimer = window.setTimeout(() => {
+      if (!box.classList.contains('open')) return;
+      if (viewerChromeEngaged(box)) {
+        armViewerChromeIdle(box, 800);
+        return;
+      }
+      box.classList.add('viewer-idle');
+    }, delay);
+  }
+
   function wakeViewerChrome() {
     const box = document.querySelector(`#${APP_ID} .scg-lightbox.open`);
     if (!box) return;
     box.classList.remove('viewer-idle');
-    clearTimeout(viewerChromeTimer);
-    viewerChromeTimer = window.setTimeout(() => {
-      if (box.classList.contains('open') && !state.viewerInfoOpen) box.classList.add('viewer-idle');
-    }, 2800);
+    armViewerChromeIdle(box);
   }
 
   function closeLightbox() {
@@ -2974,9 +2990,11 @@
     viewerTools.onclick = event => event.stopPropagation();
     box.onpointermove = wakeViewerChrome;
     box.onpointerdown = wakeViewerChrome;
+    box.onfocusin = wakeViewerChrome;
+    box.onpointerleave = () => armViewerChromeIdle(box, 700);
     wakeViewerChrome();
     box.querySelector('.scg-viewer-thumb.active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
-    if (!wasOpen) box.querySelector('[data-viewer-close]')?.focus({ preventScroll: true });
+    if (!wasOpen) box.focus({ preventScroll: true });
 
     const stage = box.querySelector('[data-viewer-stage]');
     const stillCurrent = () => box.classList.contains('open') && token === state.viewerRenderToken && currentViewerItem() === item;
@@ -4587,11 +4605,15 @@
       display:flex;align-items:center;gap:14px;min-width:0;
       width:calc(100% - 24px);margin:12px;
       padding:8px 10px 8px 14px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
-      background:color-mix(in srgb,var(--scg-surface) 88%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(22px) saturate(135%);
-      transition:opacity .26s ease,transform .26s ease;
+      border:1px solid color-mix(in srgb,#ffffff 15%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 62%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 44%,transparent));
+      box-shadow:0 12px 34px #0000005c,inset 0 1px 0 color-mix(in srgb,#ffffff 10%,transparent);
+      backdrop-filter:blur(28px) saturate(160%);
+      -webkit-backdrop-filter:blur(28px) saturate(160%);
+      visibility:visible;will-change:opacity,transform;
+      transition:opacity .28s cubic-bezier(.2,.7,.3,1),transform .28s cubic-bezier(.2,.7,.3,1),visibility 0s;
     }
     #${APP_ID} .scg-viewer-identity{display:flex;align-items:center;gap:14px;min-width:0;flex:1}
     #${APP_ID} .scg-viewer-identity>b{
@@ -4694,13 +4716,23 @@
       border-top-color:var(--scg-accent);border-radius:99px;
       animation:scg-viewer-spin .75s linear infinite;pointer-events:none;
     }
+    @keyframes scg-viewer-loading-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
     @keyframes scg-viewer-spin{to{transform:rotate(360deg)}}
-    #${APP_ID} .scg-viewer-loading{display:flex;align-items:center;gap:11px;color:var(--scg-muted);font-size:12px}
+    #${APP_ID} .scg-viewer-loading{
+      display:flex;align-items:center;gap:11px;padding:9px 12px;
+      border:1px solid color-mix(in srgb,var(--scg-line-strong) 72%,transparent);border-radius:99px;
+      background:color-mix(in srgb,var(--scg-surface) 44%,transparent);
+      color:var(--scg-muted);font-size:12px;
+      backdrop-filter:blur(14px) saturate(145%);
+      -webkit-backdrop-filter:blur(14px) saturate(145%);
+      animation:scg-viewer-loading-in .2s ease both;
+    }
     #${APP_ID} .scg-viewer-loading i{
-      width:19px;height:19px;
+      display:block;width:19px;height:19px;flex:none;
       border:2px solid color-mix(in srgb,var(--scg-text) 20%,transparent);
       border-top-color:var(--scg-accent);border-radius:99px;
       animation:scg-viewer-spin .75s linear infinite;
+      transform-origin:center;will-change:transform;
     }
     #${APP_ID} .scg-viewer-error{
       max-width:470px;padding:24px;
@@ -4798,11 +4830,15 @@
       display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;
       width:calc(100% - 24px);margin:0 12px 12px;
       padding:8px 10px;
-      border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
-      background:color-mix(in srgb,var(--scg-surface) 88%,transparent);
-      box-shadow:var(--scg-shadow);
-      backdrop-filter:blur(22px) saturate(135%);
-      transition:opacity .26s ease,transform .26s ease;
+      border:1px solid color-mix(in srgb,#ffffff 15%,var(--scg-line));border-radius:var(--scg-r-lg);
+      background:linear-gradient(135deg,
+        color-mix(in srgb,var(--scg-surface) 62%,transparent),
+        color-mix(in srgb,var(--scg-surface-2) 44%,transparent));
+      box-shadow:0 12px 34px #0000005c,inset 0 1px 0 color-mix(in srgb,#ffffff 10%,transparent);
+      backdrop-filter:blur(28px) saturate(160%);
+      -webkit-backdrop-filter:blur(28px) saturate(160%);
+      visibility:visible;will-change:opacity,transform;
+      transition:opacity .28s cubic-bezier(.2,.7,.3,1),transform .28s cubic-bezier(.2,.7,.3,1),visibility 0s;
     }
     #${APP_ID} .scg-viewer-strip{
       display:flex;align-items:center;gap:7px;min-width:0;
@@ -4839,9 +4875,15 @@
       background:var(--scg-surface-3);color:var(--scg-text);border-color:var(--scg-line-strong);
     }
 
-    /* Idle chrome fade: only when the details rail is closed. */
-    #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-viewer-topbar{opacity:0;pointer-events:none;transform:translateY(-14px)}
-    #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-viewer-footer{opacity:0;pointer-events:none;transform:translateY(14px)}
+    /* The translucent viewer chrome yields to the media after inactivity. */
+    #${APP_ID} .scg-lightbox.viewer-idle .scg-viewer-topbar{
+      opacity:0;visibility:hidden;pointer-events:none;transform:translate3d(0,-18px,0);
+      transition:opacity .28s cubic-bezier(.4,0,1,1),transform .28s cubic-bezier(.4,0,1,1),visibility 0s .28s;
+    }
+    #${APP_ID} .scg-lightbox.viewer-idle .scg-viewer-footer{
+      opacity:0;visibility:hidden;pointer-events:none;transform:translate3d(0,18px,0);
+      transition:opacity .28s cubic-bezier(.4,0,1,1),transform .28s cubic-bezier(.4,0,1,1),visibility 0s .28s;
+    }
     #${APP_ID} .scg-lightbox.viewer-idle.details-hidden .scg-nav{opacity:0;pointer-events:none}
 
 
@@ -5024,6 +5066,10 @@
         transition-delay:0s !important;
       }
       #${APP_ID} .scg-scroll{scroll-behavior:auto}
+      #${APP_ID} .scg-viewer-loading i,
+      #${APP_ID} .scg-lightbox-stage.viewer-buffering:before{
+        animation:none !important;border-color:var(--scg-accent);opacity:.72;
+      }
       #${APP_ID} .scg-card:hover,#${APP_ID} .scg-viewer-thumb:hover,
       #scg-launch:hover,#${APP_ID} .scg-embed-placeholder button:hover{transform:none}
       #${APP_ID} .scg-lightbox .scg-nav:hover{transform:translateY(-50%)}
@@ -5164,7 +5210,7 @@
       </footer>
       <button class="scg-top scg-tip-up scg-tip-end" data-tooltip="Back to the top of the gallery">${iconWell('up')}<span>Top</span></button>
     </div>
-    <div class="scg-lightbox" role="dialog" aria-modal="true" aria-label="Media viewer"></div>
+    <div class="scg-lightbox" role="dialog" aria-modal="true" aria-label="Media viewer" tabindex="-1"></div>
     <div class="scg-settings-panel" role="dialog" aria-modal="true" aria-label="Settings and diagnostics">
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
