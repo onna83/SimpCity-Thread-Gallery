@@ -440,6 +440,7 @@ test('download queue uses restrained translucent glass without reducing readabil
 
 test('interface polish retains responsive, native, and launcher safeguards', () => {
   assert.match(source, /#\$\{APP_ID\} select option\{background:var\(--scg-surface\);color:var\(--scg-text\)\}/);
+  assert.match(source, /\.scg-filters button:hover:not\(:disabled\):not\(\.active\)\{background:var\(--scg-surface-3\);color:var\(--scg-text\)\}/);
   assert.match(source, /@media\(max-height:620px\)/);
   assert.match(source, /\.scg-download-jobs\{max-height:30vh\}/);
   assert.match(source, /#scg-launch\{[\s\S]*?min-height:66px/);

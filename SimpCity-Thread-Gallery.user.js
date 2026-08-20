@@ -3741,7 +3741,7 @@
       font-size:10.5px;font-weight:650;text-align:center;
       font-variant-numeric:tabular-nums;
     }
-    #${APP_ID} .scg-filters button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
+    #${APP_ID} .scg-filters button:hover:not(:disabled):not(.active){background:var(--scg-surface-3);color:var(--scg-text)}
     #${APP_ID} .scg-filters button.active{
       background:var(--scg-accent);color:var(--scg-accent-ink);
       box-shadow:var(--scg-shadow-sm);
