@@ -51,6 +51,7 @@
   });
   const THEME_MODES = Object.freeze(['dark', 'light', 'midnight', 'graphite']);
   const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight', midnight: 'Indigo', graphite: 'Graphite' });
+  const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500]);
 
   const storage = {
     mode: typeof GM_getValue === 'function' && typeof GM_setValue === 'function' ? 'Tampermonkey isolated storage' : 'page localStorage fallback',
@@ -123,7 +124,7 @@
     compact: Boolean(savedSettings.compact),
     sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
     groupBy: savedSettings.groupBy === 'reply' ? 'reply' : 'none',
-    perPage: [40, 60, 100].includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : 60,
+    perPage: VIEW_PAGE_SIZES.includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : DEFAULT_SETTINGS.perPage,
     theme: THEME_MODES.includes(savedSettings.theme) ? savedSettings.theme : DEFAULT_SETTINGS.theme,
     filtersCollapsed: Boolean(savedSettings.filtersCollapsed),
     layoutMode: ['masonry', 'grid', 'feed'].includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
@@ -1380,7 +1381,7 @@
       compact: Boolean(input.compact),
       sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
       groupBy: input.groupBy === 'reply' ? 'reply' : DEFAULT_SETTINGS.groupBy,
-      perPage: [40, 60, 100].includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
+      perPage: VIEW_PAGE_SIZES.includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
       theme: THEME_MODES.includes(input.theme) ? input.theme : DEFAULT_SETTINGS.theme,
       filtersCollapsed: Boolean(input.filtersCollapsed),
       layoutMode: LAYOUT_MODES.includes(input.layoutMode) ? input.layoutMode : DEFAULT_SETTINGS.layoutMode,
@@ -5174,7 +5175,7 @@
             <button data-action="view-next" class="scg-tip-end" data-tooltip="Next result page" aria-label="Next result page">${iconWell('next')}<span>Next</span></button>
           </span>
           <label class="scg-size-control"><span>Media size</span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size"><output data-card-scale-value>100%</output></label>
-          <label>Per view <select data-page-size><option value="40">40</option><option value="60">60</option><option value="100">100</option></select></label>
+          <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${size}</option>`).join('')}</select></label>
         </div>
       </section>
     </div>

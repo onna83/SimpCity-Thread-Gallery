@@ -455,6 +455,13 @@ test('viewer loader and translucent chrome have resilient motion states', () => 
   assert.match(source, /if \(!wasOpen\) box\.focus\(\{ preventScroll: true \}\)/);
 });
 
+test('per-view pagination supports larger galleries through 500 items', () => {
+  assert.match(source, /VIEW_PAGE_SIZES = Object\.freeze\(\[40, 60, 100, 200, 300, 500\]\)/);
+  assert.match(source, /VIEW_PAGE_SIZES\.includes\(Number\(savedSettings\.perPage\)\)/);
+  assert.match(source, /VIEW_PAGE_SIZES\.includes\(Number\(input\.perPage\)\)/);
+  assert.match(source, /VIEW_PAGE_SIZES\.map\(size => `<option value="\$\{size\}">\$\{size\}<\/option>`\)\.join\(''\)/);
+});
+
 test('display labels are free of known mojibake sequences', () => {
   assert.doesNotMatch(source, /Ã|Â|â|�/);
   assert.match(source, /Darkroom · v\$\{APP_VERSION\}/);
