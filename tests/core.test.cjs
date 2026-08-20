@@ -28,7 +28,8 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery — Hybrid UI Fork');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.hybrid');
-  assert.match(metadataValue('version'), /^0\.9\.[56]$/);
+  assert.equal(metadataValue('version'), '0.9.7');
+  assert.match(source, /const APP_VERSION = '0\.9\.7'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -97,8 +98,7 @@ test('source retains provenance, memory, download, and ZIP safeguards', () => {
   assert.match(source, /ZIP creation canceled/);
 });
 
-test('preview-only Darkroom UI is recognized without making it a stable tag', () => {
-  if (metadataValue('version') !== '0.9.6') return;
+test('Darkroom UI and media-size controls remain available', () => {
   assert.match(source, /data-ui', 'darkroom'/);
   assert.match(source, /Object\.freeze\(\['masonry', 'grid', 'feed'\]\)/);
   assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light', 'midnight', 'graphite'\]\)/);

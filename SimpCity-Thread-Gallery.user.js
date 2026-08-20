@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery — Hybrid UI Fork
 // @namespace    local.simpcity.gallery.hybrid
-// @version      0.9.6
+// @version      0.9.7
 // @description  Browse SimpCity thread media in a Darkroom gallery with filtering, lightbox viewing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -19,10 +19,10 @@
   // DESIGN DIRECTION: "Darkroom" â€” the media canvas is the page; a single
   // floating instrument plate carries every frequent control; the dock at the
   // foot of the canvas changes identity between browse, select and download.
-  // Only behaviour-neutral UI code was changed from 0.9.5; scanning, resolving,
-  // validation, ZIP packing, history and diagnostics are untouched.
+  // v0.9.7 keeps the established architecture while reducing rendering work
+  // and adding safer scanning plus reply-level grouping and selection controls.
 
-  const APP_VERSION = '0.9.6';
+  const APP_VERSION = '0.9.7';
   const APP_ID = 'sc-thread-gallery';
   const SETTINGS_KEY = 'sc-thread-gallery-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-download-history-v1';
@@ -3245,7 +3245,7 @@
   style.textContent = `
 
     /* ============================================================
-       DARKROOM  -  design system for SimpCity Thread Gallery 0.9.6
+       DARKROOM  -  design system for SimpCity Thread Gallery 0.9.7
        Direction: full-bleed media canvas, floating instrument plate,
        mode-morphing dock. One restrained signal colour per theme.
        ============================================================ */

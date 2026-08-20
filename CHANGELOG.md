@@ -2,6 +2,19 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.9.7 - Release candidate
+
+Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or published.
+
+- Reduced repeated Darkroom compositing work by removing blur from repeated badges and selection controls, simplifying card shadows, and adding safe paint/style containment.
+- Cached filtered and sorted results, kept the card-size slider CSS-variable based, and isolated download progress from full gallery rendering.
+- Throttled visible download progress to about 250 ms and updates keyed queue rows without rebuilding the entire queue.
+- Added a 50-page full-thread warning threshold, a persisted opt-out and re-enable setting, a custom RAM warning dialog, detailed scan status, failed-page accounting, and abortable HTML-only requests.
+- Added session-only reply collapse controls with Collapse All and Expand All.
+- Added reply-level downloadable-media selection with checked, unchecked, and native indeterminate states across collapsed groups and result-page chunks.
+- Kept selection and active-download dock states usable together, including cancellation after selection mode is closed.
+- Added automated regression coverage for the new performance, scan-warning, collapse, selection, and dock behavior.
+
 ## 0.9.6 - Darkroom Preview
 
 Development baseline on `develop`; not a stable release and not tagged.
@@ -35,4 +48,3 @@ The available project notes record these releases, but do not provide enough rel
 - 0.7.2
 - 0.7.1
 - 0.6.0
-

@@ -9,9 +9,11 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 - Scans the current page, a chosen page, or an entire thread.
 - Keeps author, page, reply, post, caption, source, and host provenance.
 - Shows masonry, uniform-grid, and feed layouts with search and filters.
+- Collapses individual reply groups or all groups in the current filtered results.
 - Opens images and supported videos in a keyboard-friendly lightbox.
 - Resolves original images and direct video files where a host exposes them.
 - Selects downloadable media for validated, cancellable ZIP downloads.
+- Selects all downloadable media in a reply with checked and indeterminate group state.
 - Splits large archives, records CRC32 values, merges byte-identical files, and can add `manifest.csv`.
 - Stores preferences and verified download history locally.
 - Supports desktop browsers and phone layouts.
@@ -31,7 +33,7 @@ Because the script targets an adult-content forum, the GreasyFork network serves
 
 [Install the stable SimpCity Thread Gallery release](https://sleazyfork.org/en/scripts/591943-simpcity-thread-gallery-hybrid-ui-fork)
 
-Choose **Install this script** and approve it in Tampermonkey. The public listing currently tracks the stable release; preview development stays on the `develop` branch until it is ready.
+Choose **Install this script** and approve it in Tampermonkey. The public listing tracks the published stable release; release-candidate work stays on a feature branch until it is reviewed and approved.
 
 ## Media support
 
@@ -41,7 +43,7 @@ A preview may use a thumbnail or heuristic URL. Downloads have a stricter rule: 
 
 ## Full-thread scans and RAM
 
-Scanning fetches thread HTML without intentionally preloading media bytes. Even so, a very large thread can use substantial RAM because its reply metadata and extracted items remain in memory. Start with **This page** on older phones or memory-constrained machines, and cancel a full scan if the browser becomes sluggish.
+Scanning fetches thread HTML without intentionally preloading media bytes. Even so, a very large thread can use substantial RAM because its reply metadata and extracted items remain in memory. By default, threads with 50 or more detected pages show a custom warning before the scan begins. You can disable that warning in the dialog and enable it again in Settings. Start with **This page** on older phones or memory-constrained machines, and cancel a full scan if the browser becomes sluggish.
 
 ## Privacy
 
@@ -59,8 +61,9 @@ Use the GitHub bug or feature template once the public repository is connected. 
 
 ## Development and releases
 
-- `main` is the stable line and currently points to the public v0.9.5 baseline.
-- `develop` contains the v0.9.6 Darkroom preview.
+- `main` contains the v0.9.6 Darkroom baseline.
+- `develop` is available for ongoing development from that baseline.
+- `feature/v0.9.7` contains the unmerged v0.9.7 release candidate.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.
 - GitHub Releases will provide downloadable historical versions; version-numbered JS/TXT copies are not active source files.
 
@@ -73,7 +76,7 @@ node --test tests/core.test.cjs
 
 ## Screenshots
 
-Screenshots will be added after the public repository is connected. Planned views:
+Screenshot placeholders for the public repository:
 
 - Darkroom gallery on desktop
 - Media viewer and details rail
@@ -85,4 +88,3 @@ Screenshots must use synthetic or fully sanitized content.
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
