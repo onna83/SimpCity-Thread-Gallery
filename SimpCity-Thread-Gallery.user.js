@@ -16,7 +16,7 @@
 (() => {
   'use strict';
 
-  // DESIGN DIRECTION: "Darkroom" â€” the media canvas is the page; a single
+  // DESIGN DIRECTION: "Darkroom" — the media canvas is the page; a single
   // floating instrument plate carries every frequent control; the dock at the
   // foot of the canvas changes identity between browse, select and download.
   // v0.9.7 keeps the established architecture while reducing rendering work
@@ -601,7 +601,7 @@
         ? `${state.scanning ? 'Scanning' : 'Indexed'} ${state.scannedPages || 0} of ${state.threadPageCount} pages`
         : `Page ${state.sourcePage || pageNumberFromUrl()} of ${state.threadPageCount}`;
     }
-    if (source) source.textContent = `${state.sourceLabel} Â· ${state.items.length} indexed`;
+    if (source) source.textContent = `${state.sourceLabel} · ${state.items.length} indexed`;
   }
 
   function applyShellState() {
@@ -2651,8 +2651,8 @@
       : state.sourceLabel;
     const activityDetail = app.querySelector('[data-activity-detail]');
     if (activityDetail) activityDetail.textContent = state.scanning
-      ? `${state.items.length} items indexed Â· media stays unloaded`
-      : `${LAYOUT_LABELS[state.layoutMode]} Â· ${matched.length} matched Â· ${state.items.length} indexed Â· view ${state.viewPage} of ${state.viewPages}`;
+      ? `${state.items.length} items indexed · media stays unloaded`
+      : `${LAYOUT_LABELS[state.layoutMode]} · ${matched.length} matched · ${state.items.length} indexed · view ${state.viewPage} of ${state.viewPages}`;
     setIconButton(app.querySelector('[data-action="thread"]'), state.scanning ? 'close' : 'scan', state.scanning ? 'Cancel scan' : 'Scan entire thread');
     setIconButton(app.querySelector('[data-action="selection-mode"]'), state.selectionMode ? 'close' : 'select', state.selectionMode
       ? 'Exit selection'
@@ -2679,13 +2679,13 @@
   function mediaResolutionText(dimensions, qualifier = '') {
     const normalized = normalizeMediaDimensions(dimensions?.width, dimensions?.height);
     if (!normalized) return 'Unavailable';
-    const value = `${normalized.width.toLocaleString()} Ã— ${normalized.height.toLocaleString()}`;
-    return qualifier ? `${qualifier} Â· ${value}` : value;
+    const value = `${normalized.width.toLocaleString()} × ${normalized.height.toLocaleString()}`;
+    return qualifier ? `${qualifier} · ${value}` : value;
   }
 
   function cachedMediaResolution(item) {
     const dimensions = normalizeMediaDimensions(item?.mediaDimensions?.width, item?.mediaDimensions?.height);
-    if (!dimensions) return 'Detectingâ€¦';
+    if (!dimensions) return 'Detecting…';
     return mediaResolutionText(dimensions, item.mediaDimensions.qualifier || '');
   }
 
@@ -2922,7 +2922,7 @@
     box.innerHTML = `
       <div class="scg-viewer-shell">
         <header class="scg-viewer-topbar">
-          <div class="scg-viewer-identity"><b>${state.lightboxIndex + 1}<span>/ ${items.length}</span></b><div><div class="scg-viewer-titleline"><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="scg-viewer-resolution" data-viewer-resolution>${escapeHtml(resolutionLabel)}</span></div><small>${escapeHtml(item.author || 'Unknown')} Â· ${escapeHtml(viewerReplyLabel(item))} Â· Page ${Number(item.pageNumber || 1)} Â· ${escapeHtml(sourceHost)}</small></div></div>
+          <div class="scg-viewer-identity"><b>${state.lightboxIndex + 1}<span>/ ${items.length}</span></b><div><div class="scg-viewer-titleline"><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="scg-viewer-resolution" data-viewer-resolution>${escapeHtml(resolutionLabel)}</span></div><small>${escapeHtml(item.author || 'Unknown')} · ${escapeHtml(viewerReplyLabel(item))} · Page ${Number(item.pageNumber || 1)} · ${escapeHtml(sourceHost)}</small></div></div>
           <div class="scg-viewer-tools" role="toolbar" aria-label="Viewer tools">
             <div class="scg-viewer-zoom ${item.type === 'image' ? '' : 'unavailable'}" role="group" aria-label="Zoom"><button data-viewer-zoom-out data-tooltip="Zoom out" aria-label="Zoom out">${iconWell('zoomOut')}</button><button data-viewer-fit data-tooltip="Fit image" aria-label="Fit image">${iconWell('fit')}<span data-viewer-zoom-value>100%</span></button><button data-viewer-zoom-in data-tooltip="Zoom in" aria-label="Zoom in">${iconWell('zoomIn')}</button></div>
             <button class="scg-viewer-download" data-download-current data-tooltip="${wasDownloaded(item) ? 'Download again (D)' : 'Download (D)'}" aria-label="${wasDownloaded(item) ? 'Download again' : 'Download media'}">${iconWell('download', 'scg-icon-well-primary')}</button>
@@ -2933,13 +2933,13 @@
         </header>
         <div class="scg-viewer-body">
           <button class="scg-nav scg-prev" data-viewer-prev aria-label="Previous media">${icon('previous')}</button>
-          <section class="scg-lightbox-stage" data-viewer-stage aria-live="polite"><div class="scg-viewer-loading"><i></i><span>Resolving original mediaâ€¦</span></div></section>
+          <section class="scg-lightbox-stage" data-viewer-stage aria-live="polite"><div class="scg-viewer-loading"><i></i><span>Resolving original media…</span></div></section>
           <aside class="scg-viewer-details">
             <div class="scg-viewer-details-head"><span>${icon(item.type === 'image' ? 'image' : 'video')}</span><div><b>${escapeHtml(typeLabel)}</b><small>${escapeHtml(sourceHost)}</small></div></div>
             ${item.caption ? `<p class="scg-viewer-caption">${escapeHtml(item.caption)}</p>` : ''}
             <dl><div><dt>Resolution</dt><dd data-viewer-resolution>${escapeHtml(resolutionLabel)}</dd></div><div><dt>Posted by</dt><dd>${escapeHtml(item.author || 'Unknown')}</dd></div><div><dt>Location</dt><dd>${escapeHtml(viewerReplyLabel(item))}, page ${Number(item.pageNumber || 1)}</dd></div><div><dt>Download</dt><dd>${escapeHtml(savedLabel)}</dd></div><div><dt>Collection</dt><dd>${items.length} filtered media items</dd></div></dl>
             <div class="scg-viewer-details-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Open source</span></a><a href="${escapeHtml(item.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></div>
-            <p class="scg-viewer-shortcuts"><b>Keys</b><br>â† â†’ previous / next Â· wheel or + âˆ’ zoom Â· 0 fit<br>I details Â· F fullscreen Â· Space play or pause<br>D download Â· S select Â· Esc close</p>
+            <p class="scg-viewer-shortcuts"><b>Keys</b><br>← → previous / next · wheel or + − zoom · 0 fit<br>I details · F fullscreen · Space play or pause<br>D download · S select · Esc close</p>
           </aside>
           <button class="scg-nav scg-next" data-viewer-next aria-label="Next media">${icon('next')}</button>
         </div>
@@ -3018,7 +3018,7 @@
       if (!stage.querySelector('iframe')) {
         setViewerResolutionStatus(box, 'Unavailable');
       } else {
-        setViewerResolutionStatus(box, 'Detectingâ€¦');
+        setViewerResolutionStatus(box, 'Detecting…');
         resolveForDisplay(item).then(async direct => {
           if (!stillCurrent()) return;
           const dimensions = direct?.url ? await probeVideoDimensions(direct.url) : null;
@@ -3093,7 +3093,6 @@
       : `Page ${state.scanCurrentPage} - ${state.scannedPages} of ${state.scanTotalPages} completed`;
     app.querySelector('.scg-status').textContent = status;
     const detail = app.querySelector('[data-activity-detail]');
-    if (detail) detail.textContent = `${state.items.length} items indexed Â· media stays unloaded`;
     refreshThreadHeader();
     if (detail) detail.textContent = `${state.items.length} items found - ${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'} - media stays unloaded`;
     setIconButton(app.querySelector('[data-action="thread"]'), 'close', state.scanCanceling ? 'Canceling scan' : 'Cancel scan');
@@ -3603,12 +3602,12 @@
     #${APP_ID} .scg-scan-actions button .scg-icon{color:var(--scg-muted)}
     #${APP_ID} .scg-scan-actions button:hover:not(:disabled) .scg-icon{color:var(--scg-text)}
     #${APP_ID} .scg-scan-actions .scg-scan-thread-danger{
-      border-color:#8f2b3d;background:#561521;color:#ffe7eb;
+      border-color:#c43a50;background:#8f2034;color:#ffffff;
     }
-    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger .scg-icon{color:#ffb4c1}
+    #${APP_ID} .scg-scan-actions .scg-scan-thread-danger .scg-icon{color:#ffd7de}
     #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:hover:not(:disabled),
     #${APP_ID} .scg-scan-actions .scg-scan-thread-danger:focus-visible{
-      border-color:#d84760;background:#9e263c;color:#ffffff;
+      border-color:#ff637b;background:#c92f49;color:#ffffff;
     }
     #${APP_ID} .scg-scan-warning{
       position:absolute;width:1px;height:1px;padding:0;margin:-1px;
@@ -5008,14 +5007,14 @@
 
   const launch = document.createElement('button');
   launch.id = 'scg-launch';
-  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Darkroom Â· v${APP_VERSION}</small></span>`;
+  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Darkroom · v${APP_VERSION}</small></span>`;
   launch.setAttribute('aria-label', 'Open SimpCity thread gallery');
   document.body.appendChild(launch);
 
   function refreshLaunchButton() {
     const count = state.items.filter(isMediaItem).length;
     const detail = launch.querySelector('[data-launch-detail]');
-    if (detail) detail.textContent = count ? `Darkroom Â· ${count.toLocaleString()} indexed` : `Darkroom Â· v${APP_VERSION}`;
+    if (detail) detail.textContent = count ? `Darkroom · ${count.toLocaleString()} indexed` : `Darkroom · v${APP_VERSION}`;
     launch.setAttribute('aria-label', count ? `Open SimpCity thread gallery, ${count} media items indexed` : 'Open SimpCity thread gallery');
   }
 
@@ -5268,7 +5267,7 @@
     if (event.target.closest?.('.scg-menu-wrap, .scg-refine-wrap')) return;
     closeDisclosures();
   }, true);
-  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search Â· L cycles layout Â· Shift+A selects this view Â· Shift+G opens or closes Â· Esc closes. Viewer: â† â†’ navigate Â· wheel or + âˆ’ zoom Â· 0 fit Â· I details Â· F fullscreen Â· Space play or pause Â· D download Â· S select.', 11000);
+  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search · L cycles layout · Shift+A selects this view · Shift+G opens or closes · Esc closes. Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.', 11000);
   app.querySelector('[data-action="shortcuts"]').addEventListener('click', () => closeDisclosures());
   app.querySelector('[data-action="settings"]').onclick = () => {
     closeDisclosures();

@@ -338,3 +338,10 @@ test('interface polish retains responsive, native, and launcher safeguards', () 
   assert.match(source, /#scg-launch\{[\s\S]*?min-height:66px/);
   assert.match(source, /\.scg-lightbox \[data-tooltip\]:after\{max-width:170px\}/);
 });
+
+test('display labels are free of known mojibake sequences', () => {
+  assert.doesNotMatch(source, /Ã|Â|â|�/);
+  assert.match(source, /Darkroom · v\$\{APP_VERSION\}/);
+  assert.match(source, /normalized\.width\.toLocaleString\(\)\} × /);
+  assert.match(source, /scg-scan-thread-danger\{[\s\S]*?background:#8f2034/);
+});

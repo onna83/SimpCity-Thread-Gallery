@@ -13,6 +13,7 @@ Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or pu
 - Added session-only reply collapse controls with Collapse All and Expand All.
 - Added reply-level downloadable-media selection with checked, unchecked, and native indeterminate states across collapsed groups and result-page chunks.
 - Kept selection and active-download dock states usable together, including cancellation after selection mode is closed.
+- Repaired corrupted separators, dimensions, ellipses, and keyboard-help glyphs, and strengthened the full-thread action's red danger treatment.
 - Added automated regression coverage for the new performance, scan-warning, collapse, selection, and dock behavior.
 
 ## 0.9.6 - Darkroom Preview
