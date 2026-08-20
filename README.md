@@ -61,7 +61,7 @@ Use the GitHub bug or feature template once the public repository is connected. 
 
 ## Development and releases
 
-- `main` contains the v0.9.6 Darkroom baseline.
+- `main` contains the v0.9.6 gallery baseline.
 - `develop` is available for ongoing development from that baseline.
 - `feature/v0.9.7` contains the unmerged v0.9.7 release candidate.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.
@@ -78,7 +78,7 @@ node --test tests/core.test.cjs
 
 Screenshot placeholders for the public repository:
 
-- Darkroom gallery on desktop
+- Gallery on desktop
 - Media viewer and details rail
 - Selection and ZIP progress dock
 - Phone layout

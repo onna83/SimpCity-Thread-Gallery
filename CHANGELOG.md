@@ -6,7 +6,7 @@ This file records only history supported by the available source snapshots and p
 
 Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or published.
 
-- Reduced repeated Darkroom compositing work by removing blur from repeated badges and selection controls, simplifying card shadows, and adding safe paint/style containment.
+- Reduced repeated gallery compositing work by removing blur from repeated badges and selection controls, simplifying card shadows, and adding safe paint/style containment.
 - Cached filtered and sorted results, kept the card-size slider CSS-variable based, and isolated download progress from full gallery rendering.
 - Throttled visible download progress to about 250 ms and updates keyed queue rows without rebuilding the entire queue.
 - Added a 50-page full-thread warning threshold, a persisted opt-out and re-enable setting, a custom RAM warning dialog, detailed scan status, failed-page accounting, and abortable HTML-only requests.
@@ -23,11 +23,11 @@ Development release candidate on `feature/v0.9.7`; not yet merged, tagged, or pu
 - Made Clear history remove persisted SAVED/LEGACY markers and completed queue rows, while guarding against active-download races.
 - Added automated regression coverage for the new performance, scan-warning, collapse, selection, and dock behavior.
 
-## 0.9.6 - Darkroom Preview
+## 0.9.6 - Gallery Preview
 
 Development baseline on `develop`; not a stable release and not tagged.
 
-- Redesigned the interface around the Darkroom media canvas, floating control plate, and adaptive bottom dock.
+- Redesigned the interface around the gallery media canvas, floating control plate, and adaptive bottom dock.
 - Added Darkroom, Daylight, Indigo, and Graphite themes.
 - Added masonry, uniform-grid, and feed layouts plus a 70–160% media-size control for masonry and grid.
 - Preserved the v0.9.5 scanning, resolver, validation, ZIP, storage, history, and diagnostic systems.

@@ -26,7 +26,7 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
 }
 
 test('canonical metadata preserves the installed script identity', () => {
-  assert.equal(metadataValue('name'), 'SimpCity Thread Gallery — Hybrid UI Fork');
+  assert.equal(metadataValue('name'), 'SimpCity Thread Gallery');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.hybrid');
   assert.equal(metadataValue('version'), '0.9.7');
   assert.match(source, /const APP_VERSION = '0\.9\.7'/);
@@ -98,8 +98,8 @@ test('source retains provenance, memory, download, and ZIP safeguards', () => {
   assert.match(source, /ZIP creation canceled/);
 });
 
-test('Darkroom UI and media-size controls remain available', () => {
-  assert.match(source, /data-ui', 'darkroom'/);
+test('gallery UI and media-size controls remain available', () => {
+  assert.match(source, /data-ui', 'gallery'/);
   assert.match(source, /Object\.freeze\(\['masonry', 'grid', 'feed'\]\)/);
   assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light', 'midnight', 'graphite'\]\)/);
   assert.match(source, /min="70" max="160" step="5"/);
@@ -471,7 +471,7 @@ test('per-view pagination supports larger galleries through 500 items', () => {
 
 test('display labels are free of known mojibake sequences', () => {
   assert.doesNotMatch(source, /Ã|Â|â|�/);
-  assert.match(source, /Darkroom · v\$\{APP_VERSION\}/);
+  assert.match(source, /Media browser · v\$\{APP_VERSION\}/);
   assert.match(source, /normalized\.width\.toLocaleString\(\)\} × /);
   assert.match(source, /scg-scan-thread-danger\{[\s\S]*?background:#8f2034/);
 });

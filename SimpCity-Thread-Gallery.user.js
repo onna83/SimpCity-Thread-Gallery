@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SimpCity Thread Gallery — Hybrid UI Fork
+// @name         SimpCity Thread Gallery
 // @namespace    local.simpcity.gallery.hybrid
 // @version      0.9.7
-// @description  Browse SimpCity thread media in a Darkroom gallery with filtering, lightbox viewing and verified downloads.
+// @description  Browse SimpCity thread media in a full-screen gallery with filtering, lightbox viewing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -16,7 +16,7 @@
 (() => {
   'use strict';
 
-  // DESIGN DIRECTION: "Darkroom" — the media canvas is the page; a single
+  // DESIGN DIRECTION: the media canvas is the page; a single
   // floating instrument plate carries every frequent control; the dock at the
   // foot of the canvas changes identity between browse, select and download.
   // v0.9.7 keeps the established architecture while reducing rendering work
@@ -3267,7 +3267,7 @@
   style.textContent = `
 
     /* ============================================================
-       DARKROOM  -  design system for SimpCity Thread Gallery 0.9.7
+       GALLERY UI  -  design system for SimpCity Thread Gallery 0.9.7
        Direction: full-bleed media canvas, floating instrument plate,
        mode-morphing dock. One restrained signal colour per theme.
        ============================================================ */
@@ -5089,20 +5089,20 @@
 
   const launch = document.createElement('button');
   launch.id = 'scg-launch';
-  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Darkroom · v${APP_VERSION}</small></span>`;
+  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Media browser · v${APP_VERSION}</small></span>`;
   launch.setAttribute('aria-label', 'Open SimpCity thread gallery');
   document.body.appendChild(launch);
 
   function refreshLaunchButton() {
     const count = state.items.filter(isMediaItem).length;
     const detail = launch.querySelector('[data-launch-detail]');
-    if (detail) detail.textContent = count ? `Darkroom · ${count.toLocaleString()} indexed` : `Darkroom · v${APP_VERSION}`;
+    if (detail) detail.textContent = count ? `Media browser · ${count.toLocaleString()} indexed` : `Media browser · v${APP_VERSION}`;
     launch.setAttribute('aria-label', count ? `Open SimpCity thread gallery, ${count} media items indexed` : 'Open SimpCity thread gallery');
   }
 
   const app = document.createElement('section');
   app.id = APP_ID;
-  app.setAttribute('data-ui', 'darkroom');
+  app.setAttribute('data-ui', 'gallery');
   app.setAttribute('role', 'dialog');
   app.setAttribute('aria-modal', 'true');
   app.setAttribute('aria-label', 'SimpCity Thread Gallery');
@@ -5111,7 +5111,7 @@
       <header class="scg-header">
         <div class="scg-brand">
           <div class="scg-brand-mark" aria-hidden="true">${icon('gallery')}</div>
-          <div><b>Gallery</b><small>Darkroom</small></div>
+          <div><b>Gallery</b><small>Media browser</small></div>
         </div>
         <div class="scg-thread-context">
           <h1 data-thread-title>Thread gallery</h1>
