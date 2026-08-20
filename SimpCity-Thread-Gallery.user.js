@@ -3564,6 +3564,7 @@
     #${APP_ID} .scg-plate>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-header{
+      z-index:2; /* Keep header tooltips above the later-painted filter row. */
       display:grid;
       grid-template-columns:auto minmax(120px,1.1fr) minmax(180px,1.5fr) auto auto;
       align-items:center;gap:14px;
