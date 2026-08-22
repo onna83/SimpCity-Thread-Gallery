@@ -646,3 +646,55 @@ test('the reply index is rebuilt per render and dropped only when eligibility ca
   assert.match(source, /state\.replyIndex = !state\.scanning && state\.groupBy === 'reply' \? buildReplyIndex\(matched\) : null/);
   assert.match(source, /if \(dataset \|\| \(selection && state\.selectedOnly\)\) state\.replyIndex = null/);
 });
+
+test('aspect ratios are clamped, hinted, averaged and evicted', () => {
+  // The slice runs in a vm sandbox, so its objects carry a different
+  // Object.prototype and deepStrictEqual rejects them. Compare plain data.
+  const plain = value => JSON.parse(JSON.stringify(value));
+  const { clampRatio, parseDimensionHints, geometricMeanRatio, mergeRatioCache } = evaluateSlice(
+    'function clampRatio',
+    'const RATIO_SOURCE_RANK',
+    ['clampRatio', 'parseDimensionHints', 'geometricMeanRatio', 'mergeRatioCache'],
+  );
+
+  // clamping keeps pathological media from blowing up a row or column
+  assert.equal(clampRatio(1.5), 1.5);
+  assert.equal(clampRatio(9), 4);
+  assert.equal(clampRatio(0.01), 0.32);
+  assert.equal(clampRatio(0), 0);
+  assert.equal(clampRatio('nonsense'), 0);
+  // Degenerate input (zero height) reads as unknown, not as the clamped max,
+  // so callers fall back to the assumed ratio rather than laying out a 4:1 box.
+  assert.equal(clampRatio(Infinity), 0);
+
+  // attributes first, inline style as a fallback, null when either is missing
+  assert.deepEqual(plain(parseDimensionHints({ width: '800', height: '600' })), { width: 800, height: 600 });
+  assert.deepEqual(plain(parseDimensionHints({ style: 'width: 400px; height:200px' })), { width: 400, height: 200 });
+  assert.deepEqual(plain(parseDimensionHints({ width: '800px', height: '600px' })), { width: 800, height: 600 });
+  assert.equal(parseDimensionHints({ width: '800' }), null);
+  assert.equal(parseDimensionHints({}), null);
+  assert.equal(parseDimensionHints(null), null);
+
+  // geometric, not arithmetic: 2 and 1/2 must average to 1
+  assert.equal(geometricMeanRatio(0, 0, 0.72), 0.72);
+  assert.equal(Math.round(geometricMeanRatio(Math.log(2) + Math.log(0.5), 2, 0.72) * 1000) / 1000, 1);
+  assert.equal(Math.round(geometricMeanRatio(Math.log(0.5) * 4, 4, 0.72) * 1000) / 1000, 0.5);
+
+  // merge rounds, keeps newest on eviction, and rejects junk
+  assert.deepEqual(plain(mergeRatioCache({ a: [1.5, 10] }, { b: [0.66666, 20] }, 10)), { a: [1.5, 10], b: [0.667, 20] });
+  assert.deepEqual(plain(mergeRatioCache({}, { bad: 'x', worse: [0, 1], nope: [-1, 1] }, 10)), {});
+  const evicted = plain(mergeRatioCache({ old: [1, 1], mid: [1, 2] }, { fresh: [1, 3] }, 2));
+  assert.deepEqual(Object.keys(evicted).sort(), ['fresh', 'mid']);
+  // an existing entry is overwritten, not duplicated
+  assert.deepEqual(plain(mergeRatioCache({ a: [1, 1] }, { a: [2, 5] }, 10)), { a: [2, 5] });
+});
+
+test('ratio capture is wired into scanning, rendering and the viewer', () => {
+  assert.match(source, /dimHint: parseDimensionHints\(\{/);
+  assert.match(source, /seedRatioFromCache\(item\);/);
+  assert.match(source, /style="--scg-ratio:\$\{itemRatio\(item\)\}"/);
+  assert.match(source, /addEventListener\('load', event => \{[\s\S]*?applyMeasuredRatio/);
+  assert.match(source, /aspect-ratio:var\(--scg-ratio,0\.72\)/);
+  // a better source must not be overwritten by a worse one
+  assert.match(source, /RATIO_SOURCE_RANK\[current\.source\] > RATIO_SOURCE_RANK\[source\]/);
+});

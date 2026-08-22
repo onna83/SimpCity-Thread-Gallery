@@ -28,6 +28,9 @@
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
   const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-timeline-storage-migrated-v1';
   const LARGE_THREAD_WARNING_PAGES = 50;
+  const RATIO_CACHE_KEY = 'sc-thread-gallery-timeline-ratio-cache-v1';
+  const RATIO_CACHE_LIMIT = 4000;
+  const DEFAULT_RATIO = 0.72;
   const SCAN_WARNING_TEXT = 'Scanning a very large thread can use substantial RAM and may temporarily slow or freeze the browser. Media files remain unloaded until viewed.';
   if (document.getElementById(APP_ID)) return;
 
@@ -96,6 +99,7 @@
   }
 
   const migratedLegacyStorage = migrateLegacyStorage();
+  const storedRatioCache = storage.get(RATIO_CACHE_KEY, {});
   const storedSettings = storage.get(SETTINGS_KEY, {});
   const storedDownloadHistory = storage.get(DOWNLOAD_HISTORY_KEY, {});
   const savedSettings = storedSettings && typeof storedSettings === 'object' && !Array.isArray(storedSettings) ? storedSettings : {};
@@ -191,6 +195,115 @@
     if (dataset) datasetRevision++;
     if (selection) selectionRevision++;
     if (dataset || (selection && state.selectedOnly)) state.replyIndex = null;
+  }
+
+  // Aspect ratios drive layout before an image has loaded. These four are pure
+  // so they can be exercised directly by the test harness.
+  function clampRatio(value, min = 0.32, max = 4) {
+    const ratio = Number(value);
+    if (!Number.isFinite(ratio) || ratio <= 0) return 0;
+    return Math.min(max, Math.max(min, ratio));
+  }
+
+  function parseDimensionHints(attrs) {
+    const numeric = raw => {
+      const value = Number(String(raw === undefined || raw === null ? '' : raw).replace(/px$/i, '').trim());
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    };
+    const style = String((attrs && attrs.style) || '');
+    const fromStyle = property => {
+      for (const declaration of style.split(';')) {
+        const colon = declaration.indexOf(':');
+        if (colon < 0) continue;
+        if (declaration.slice(0, colon).trim().toLowerCase() !== property) continue;
+        return numeric(declaration.slice(colon + 1));
+      }
+      return 0;
+    };
+    const width = numeric(attrs && attrs.width) || fromStyle('width');
+    const height = numeric(attrs && attrs.height) || fromStyle('height');
+    return width && height ? { width, height } : null;
+  }
+
+  // A thread's own ratios predict it better than a fixed guess. Geometric mean,
+  // because ratios are multiplicative: the mean of 2 and 1/2 should be 1.
+  function geometricMeanRatio(logSum, count, fallback) {
+    if (!count) return fallback;
+    return clampRatio(Math.exp(logSum / count)) || fallback;
+  }
+
+  function mergeRatioCache(existing, additions, limit) {
+    const merged = Object.assign({}, existing && typeof existing === 'object' && !Array.isArray(existing) ? existing : {});
+    Object.entries(additions && typeof additions === 'object' ? additions : {}).forEach(([key, entry]) => {
+      if (!key || !Array.isArray(entry)) return;
+      const ratio = Number(entry[0]);
+      if (!Number.isFinite(ratio) || ratio <= 0) return;
+      const time = Number(entry[1]);
+      merged[key] = [Math.round(ratio * 1000) / 1000, Number.isFinite(time) ? time : 0];
+    });
+    const keys = Object.keys(merged);
+    if (keys.length <= limit) return merged;
+    keys.sort((a, b) => Number(merged[b][1] || 0) - Number(merged[a][1] || 0));
+    return Object.fromEntries(keys.slice(0, limit).map(key => [key, merged[key]]));
+  }
+
+  const RATIO_SOURCE_RANK = { assumed: 0, attr: 1, thumb: 2, measured: 3 };
+  const ratioStats = { logSum: 0, count: 0 };
+  let ratioCache = storedRatioCache && typeof storedRatioCache === 'object' && !Array.isArray(storedRatioCache) ? storedRatioCache : {};
+  let pendingRatios = {};
+  let ratioFlushTimer = 0;
+
+  function assumedRatio() {
+    return geometricMeanRatio(ratioStats.logSum, ratioStats.count, DEFAULT_RATIO);
+  }
+
+  function itemRatio(item) {
+    return (item && item.ratio && item.ratio.value) || assumedRatio();
+  }
+
+  function queueRatioFlush() {
+    if (ratioFlushTimer) return;
+    ratioFlushTimer = setTimeout(() => {
+      ratioFlushTimer = 0;
+      const additions = pendingRatios;
+      pendingRatios = {};
+      if (!Object.keys(additions).length) return;
+      ratioCache = mergeRatioCache(ratioCache, additions, RATIO_CACHE_LIMIT);
+      try { storage.set(RATIO_CACHE_KEY, ratioCache); }
+      catch { /* Layout must not depend on storage being writable. */ }
+    }, 2000);
+  }
+
+  // Later, better-sourced measurements win; equal-source jitter under 2% is
+  // ignored so a re-render cannot nudge the layout.
+  function applyMeasuredRatio(item, width, height, source) {
+    const ratio = clampRatio(Number(width) / Number(height));
+    if (!item || !ratio) return false;
+    const current = item.ratio;
+    if (current) {
+      if (RATIO_SOURCE_RANK[current.source] > RATIO_SOURCE_RANK[source]) return false;
+      if (Math.abs(ratio - current.value) / current.value < 0.02) return false;
+    }
+    item.ratio = { value: ratio, source, width: Number(width), height: Number(height) };
+    ratioStats.logSum += Math.log(ratio);
+    ratioStats.count++;
+    if (item.selectionKey) {
+      pendingRatios[item.selectionKey] = [ratio, Math.round(Date.now() / 1000)];
+      queueRatioFlush();
+    }
+    return true;
+  }
+
+  function seedRatioFromCache(item) {
+    if (!item || item.ratio || !item.selectionKey) return;
+    const cached = ratioCache[item.selectionKey];
+    const ratio = Array.isArray(cached) ? clampRatio(cached[0]) : 0;
+    if (ratio) {
+      item.ratio = { value: ratio, source: 'thumb', width: 0, height: 0 };
+      return;
+    }
+    const hint = item.dimHint ? clampRatio(item.dimHint.width / item.dimHint.height) : 0;
+    if (hint) item.ratio = { value: hint, source: 'attr', width: item.dimHint.width, height: item.dimHint.height };
   }
 
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
@@ -812,6 +925,11 @@
           type: 'image', url: src, thumb, originalLink, lightboxHint,
           mediaKey: `${String(postId).replace(/[^a-z0-9_-]/gi, '')}-${postIndex}-${mediaIndex}`,
           resolution: { candidate: seed },
+          dimHint: parseDimensionHints({
+            width: img.getAttribute('width'),
+            height: img.getAttribute('height'),
+            style: img.getAttribute('style'),
+          }),
           caption: img.getAttribute('alt') || img.getAttribute('title') || '', mediaIndex, ...common,
         });
       });
@@ -875,6 +993,7 @@
       seen.add(key);
       item.selectionKey = key;
       item.searchText = `${item.author || ''} ${item.title || ''} ${item.caption || ''} ${item.text || ''} ${item.url || ''} ${item.originalLink || ''} ${item.postNumber || ''} ${item.pageNumber || ''}`.toLowerCase();
+      seedRatioFromCache(item);
       target.push(item);
     });
     return target;
@@ -2522,7 +2641,7 @@
     const actions = `<div class="scg-actions"><button data-open="${index}">${iconWell('info')}<span>View</span></button><button data-download="${index}" class="scg-download-action">${iconWell('download', 'scg-icon-well-primary')}<span>${downloaded ? 'Download again' : (legacyDownload ? 'Download verified copy' : 'Download')}</span></button></div>`;
     if (item.type === 'image') {
       const displayUrl = item.resolution?.candidate?.url || item.url || item.thumb;
-      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-index="${index}">${selection}${badge}<button class="scg-preview" data-open="${index}" title="View original image"><img loading="lazy" data-resolve-index="${index}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" style="--scg-ratio:${itemRatio(item)}" data-index="${index}">${selection}${badge}<button class="scg-preview" data-open="${index}" title="View original image"><img loading="lazy" data-resolve-index="${index}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
     }
     if (item.type === 'video' && VIDEO_EXT.test(item.url)) {
       return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-index="${index}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
@@ -2741,6 +2860,7 @@
     const dimensions = normalizeMediaDimensions(width, height);
     if (!box || !item || !dimensions) return false;
     item.mediaDimensions = { ...dimensions, qualifier, mediaUrl: absoluteUrl(mediaUrl), detectedAt: Date.now() };
+    applyMeasuredRatio(item, dimensions.width, dimensions.height, qualifier ? 'thumb' : 'measured');
     const value = mediaResolutionText(dimensions, qualifier);
     box.querySelectorAll('[data-viewer-resolution]').forEach(node => {
       node.textContent = value;
@@ -4069,6 +4189,11 @@
       display:block;width:100%;max-height:660px;object-fit:contain;background:var(--scg-well);
     }
     #${APP_ID}.compact .scg-card img,#${APP_ID}.compact .scg-card video{max-height:430px}
+    /* A known ratio reserves the box before the image arrives, so loading one
+       image no longer re-balances every masonry column. */
+    #${APP_ID}[data-layout="masonry"] .scg-card .scg-preview img{
+      aspect-ratio:var(--scg-ratio,0.72);height:auto;max-height:none;object-fit:cover;
+    }
 
     #${APP_ID} .scg-badge{
       position:absolute;z-index:7;top:9px;right:9px;
@@ -5549,6 +5674,15 @@
     if (!button) return;
     controllers.viewer.open(items[Number(button.dataset.open)]);
   };
+  app.querySelector('.scg-grid').addEventListener('load', event => {
+    const img = event.target;
+    if (!img || img.tagName !== 'IMG' || !img.naturalWidth || !img.naturalHeight) return;
+    const item = state.renderedItems[Number(img.dataset.resolveIndex)];
+    if (!item) return;
+    const isThumb = Boolean(item.thumb) && img.currentSrc === absoluteUrl(item.thumb);
+    if (!applyMeasuredRatio(item, img.naturalWidth, img.naturalHeight, isThumb ? 'thumb' : 'measured')) return;
+    img.closest('.scg-card')?.style.setProperty('--scg-ratio', String(item.ratio.value));
+  }, true);
   app.querySelector('.scg-lightbox').onclick = event => { if (event.target.classList.contains('scg-lightbox')) closeLightbox(); };
   document.addEventListener('keydown', event => {
     const typing = event.target.matches?.('input,textarea,select,[contenteditable="true"]');
