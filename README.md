@@ -63,7 +63,7 @@ Use the GitHub bug or feature template once the public repository is connected. 
 
 ## Development and releases
 
-- `main` contains the current v0.9.7 release.
+- `main` contains the current v0.9.7.1 release.
 - `develop` is the integration branch for ongoing development.
 - Release work is completed on feature branches and promoted to `main` after checks pass.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.

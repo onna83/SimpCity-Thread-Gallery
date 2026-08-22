@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery
 // @namespace    local.simpcity.gallery.hybrid
-// @version      0.9.7
+// @version      0.9.7.1
 // @description  Browse SimpCity thread media in a full-screen gallery with filtering, lightbox viewing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // v0.9.7 keeps the established architecture while reducing rendering work
   // and adding safer scanning plus reply-level grouping and selection controls.
 
-  const APP_VERSION = '0.9.7';
+  const APP_VERSION = '0.9.7.1';
   const APP_ID = 'sc-thread-gallery';
   const SETTINGS_KEY = 'sc-thread-gallery-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-download-history-v1';
