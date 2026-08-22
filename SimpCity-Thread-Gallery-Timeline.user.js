@@ -160,6 +160,8 @@
     viewPages: 1,
     renderedItems: [],
     replyIndex: null,
+    expandedKeys: new Set(),
+    activePlayers: new Set(),
     threadPageCount: 1,
     sourcePage: 1,
     selectionMode: false,
@@ -203,6 +205,7 @@
   let selectionRevision = 0;
   let visibleItemsCache = null;
   let facetCache = null;
+  let itemIndexCache = null;
 
   function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
     if (dataset) datasetRevision++;
@@ -1490,8 +1493,8 @@
   function updateDownloadedIndicators() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
-    app.querySelectorAll('.scg-card[data-index]').forEach(cardNode => {
-      const item = state.renderedItems[Number(cardNode.dataset.index)];
+    app.querySelectorAll('.scg-card[data-key]').forEach(cardNode => {
+      const item = itemForNode(cardNode, 'key');
       const saved = wasDownloaded(item);
       const legacy = hasLegacyDownload(item);
       cardNode.classList.toggle('downloaded', saved);
@@ -1936,8 +1939,8 @@
     const modeButton = app.querySelector('[data-action="selection-mode"]');
     if (modeButton) setIconButton(modeButton, state.selectionMode ? 'close' : 'select', state.selectionMode ? 'Exit selection' : `Select media${count ? ` (${count})` : ''}`);
     const visible = state.renderedItems;
-    app.querySelectorAll('.scg-card[data-index]').forEach(cardNode => {
-      const item = visible[Number(cardNode.dataset.index)];
+    app.querySelectorAll('.scg-card[data-key]').forEach(cardNode => {
+      const item = itemForNode(cardNode, 'key');
       const checked = Boolean(item && isDownloadableMedia(item) && state.selected.has(item.selectionKey));
       cardNode.classList.toggle('selected', state.selectionMode && checked);
       const input = cardNode.querySelector('[data-select]');
@@ -2799,14 +2802,14 @@
       entries.forEach(entry => {
         if (!entry.isIntersecting) return;
         state.imageObserver.unobserve(entry.target);
-        const item = items[Number(entry.target.dataset.resolveIndex)];
+        const item = itemsByKey().get(entry.target.dataset.resolveKey);
         if (!item || item.type !== 'image') return;
         resolveForDisplay(item).then(result => {
           if (result.url && entry.target.isConnected && entry.target.src !== result.url) entry.target.src = result.url;
         });
       });
     }, { root: app.querySelector('.scg-scroll'), rootMargin: '700px 0px', threshold: 0.01 });
-    app.querySelectorAll('img[data-resolve-index]').forEach(img => state.imageObserver.observe(img));
+    app.querySelectorAll('img[data-resolve-key]').forEach(img => state.imageObserver.observe(img));
   }
 
   function releaseRenderedMedia() {
@@ -2824,7 +2827,8 @@
     grid.replaceChildren();
   }
 
-  function card(item, index) {
+  function card(item) {
+    const key = escapeHtml(item.selectionKey || '');
     const sourceHost = hostOf(item.originalLink || item.url || item.postUrl);
     const meta = `<div class="scg-meta"><span>${escapeHtml(item.author)}</span><a href="${escapeHtml(item.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View post</span></a></div>`;
     const isSelected = state.selectionMode && state.selected.has(item.selectionKey);
@@ -2832,32 +2836,38 @@
     const legacyDownload = isMediaItem(item) && hasLegacyDownload(item);
     const historyClass = downloaded ? 'downloaded' : (legacyDownload ? 'download-legacy' : '');
     const selection = isDownloadableMedia(item)
-      ? `<label class="scg-select" title="Select for bulk download"><input type="checkbox" data-select="${index}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
+      ? `<label class="scg-select" title="Select for bulk download"><input type="checkbox" data-select="${key}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
       : '';
     const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : item.type.toUpperCase());
     const historyLabel = downloaded ? 'VERIFIED' : (legacyDownload ? 'LEGACY' : '');
     const historyTitle = downloaded ? 'Validated media recorded in download history' : (legacyDownload ? 'Older unverified history entry; this item will not be skipped' : '');
     const badge = `<div class="scg-badge"><b>${typeLabel}</b><span>${escapeHtml(sourceHost)}</span><em class="scg-saved-status ${historyLabel ? 'visible' : ''} ${legacyDownload ? 'legacy' : ''}" title="${escapeHtml(historyTitle)}">${historyLabel}</em></div>`;
-    const actions = `<div class="scg-actions"><button data-open="${index}">${iconWell('info')}<span>View</span></button><button data-download="${index}" class="scg-download-action">${iconWell('download', 'scg-icon-well-primary')}<span>${downloaded ? 'Download again' : (legacyDownload ? 'Download verified copy' : 'Download')}</span></button></div>`;
+    const actions = `<div class="scg-actions"><button data-open="${key}">${iconWell('info')}<span>View</span></button><button data-download="${key}" class="scg-download-action">${iconWell('download', 'scg-icon-well-primary')}<span>${downloaded ? 'Download again' : (legacyDownload ? 'Download verified copy' : 'Download')}</span></button></div>`;
     if (item.type === 'image') {
       const displayUrl = item.resolution?.candidate?.url || item.url || item.thumb;
-      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" style="--scg-ratio:${itemRatio(item)}" data-index="${index}">${selection}${badge}<button class="scg-preview" data-open="${index}" title="View original image"><img loading="lazy" data-resolve-index="${index}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" style="--scg-ratio:${itemRatio(item)}" data-key="${key}">${selection}${badge}<button class="scg-preview" data-open="${key}" title="View original image"><img loading="lazy" data-resolve-key="${key}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
     }
     if (item.type === 'video' && VIDEO_EXT.test(item.url)) {
-      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-index="${index}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
     }
     if (item.type === 'video' || item.type === 'embed') {
       const transformed = embedUrl(item.url);
       if (item.wasFrame || transformed !== unwrapSimpcityRedirect(item.url)) {
-        return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-index="${index}">${selection}${badge}<div class="scg-embed scg-embed-placeholder"><button data-load-player="${index}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>Load ${escapeHtml(sourceHost)} player</span></button></div>${actions}${meta}</article>`;
+        const player = state.activePlayers.has(item.selectionKey)
+          ? `<div class="scg-embed">${iframeHtml(item)}</div>`
+          : `<div class="scg-embed scg-embed-placeholder"><button data-load-player="${key}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>Load ${escapeHtml(sourceHost)} player</span></button></div>`;
+        return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}${player}${actions}${meta}</article>`;
       }
-      return `<article class="scg-card scg-linkcard ${isSelected ? 'selected' : ''} ${historyClass}" data-index="${index}">${selection}${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || 'Open video host')}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-linkcard ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || 'Open video host')}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${actions}${meta}</article>`;
     }
     if (item.type === 'link') {
-      return `<article class="scg-card scg-linkcard" data-index="${index}">${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${meta}</article>`;
+      return `<article class="scg-card scg-linkcard" data-key="${key}">${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${meta}</article>`;
     }
-    const expand = item.text.length > 360 ? `<button class="scg-expand" data-expand>${iconWell('chevron')}<span>Show more</span></button>` : '';
-    return `<article class="scg-card scg-textcard" data-index="${index}">${badge}<p>${escapeHtml(item.text)}</p>${expand}${meta}</article>`;
+    const expanded = state.expandedKeys.has(item.selectionKey);
+    const expand = item.text.length > 360
+      ? `<button class="scg-expand ${expanded ? 'expanded' : ''}" data-expand="${key}">${iconWell('chevron')}<span>${expanded ? 'Show less' : 'Show more'}</span></button>`
+      : '';
+    return `<article class="scg-card scg-textcard" data-key="${key}">${badge}<p class="${expanded ? 'expanded' : ''}">${escapeHtml(item.text)}</p>${expand}${meta}</article>`;
   }
 
   function setSelectOptions(select, options, selectedValue) {
@@ -2875,6 +2885,20 @@
     const valid = options.some(option => option.value === String(selectedValue));
     select.value = valid ? String(selectedValue) : options[0]?.value || '';
     return select.value;
+  }
+
+  // Cards address their item by selectionKey rather than by position in
+  // renderedItems, so a windowed renderer can mount any slice in any order.
+  function itemsByKey() {
+    if (itemIndexCache && itemIndexCache.revision === datasetRevision) return itemIndexCache.map;
+    const map = new Map();
+    state.items.forEach(item => map.set(item.selectionKey, item));
+    itemIndexCache = { revision: datasetRevision, map };
+    return map;
+  }
+
+  function itemForNode(node, attribute) {
+    return node ? itemsByKey().get(node.dataset[attribute]) : undefined;
   }
 
   function buildReplyIndex(items) {
@@ -2939,7 +2963,7 @@
       const replySelect = state.selectionMode && replySelection.total
         ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
         : '';
-      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item, entry.index)).join('')}</div></section>`;
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item)).join('')}</div></section>`;
     }).join('');
   }
 
@@ -3010,7 +3034,7 @@
     grid.innerHTML = state.scanning
       ? skeletonMarkup(state.compact ? 16 : 12)
       : state.renderedItems.length
-        ? (state.groupBy === 'reply' ? replyGroupsMarkup(state.renderedItems) : state.renderedItems.map((item, index) => card(item, index)).join(''))
+        ? (state.groupBy === 'reply' ? replyGroupsMarkup(state.renderedItems) : state.renderedItems.map(item => card(item)).join(''))
         : emptyStateMarkup();
     if (!state.scanning) observeFullImages(state.renderedItems);
     app.querySelector('.scg-status').textContent = state.scanning
@@ -3457,6 +3481,8 @@
     invalidateVisibleItems({ dataset: true, selection: true });
     state.selected.clear();
     state.collapsedReplies.clear();
+    state.expandedKeys.clear();
+    state.activePlayers.clear();
     state.selectionMode = false;
     state.selectedOnly = false;
     state.authorFilter = 'all';
@@ -5814,7 +5840,6 @@
   };
   scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
   app.querySelector('.scg-grid').onclick = event => {
-    const items = state.renderedItems;
     const replySelect = event.target.closest('[data-reply-select]');
     if (replySelect) {
       setReplySelected(replySelect.dataset.replySelect, replySelect.checked);
@@ -5830,7 +5855,7 @@
     }
     const selection = event.target.closest('[data-select]');
     if (selection) {
-      const item = items[Number(selection.dataset.select)];
+      const item = itemForNode(selection, 'select');
       setSelected(item, selection.checked);
       if (state.selectedOnly) render();
       else updateSelectionUi();
@@ -5838,9 +5863,10 @@
     }
     const player = event.target.closest('[data-load-player]');
     if (player) {
-      const item = items[Number(player.dataset.loadPlayer)];
+      const item = itemForNode(player, 'loadPlayer');
       const container = player.closest('.scg-embed');
       if (item && container) {
+        state.activePlayers.add(item.selectionKey);
         container.classList.remove('scg-embed-placeholder');
         container.innerHTML = iframeHtml(item);
       }
@@ -5848,25 +5874,30 @@
     }
     const expand = event.target.closest('[data-expand]');
     if (expand) {
+      const item = itemForNode(expand, 'expand');
       const paragraph = expand.closest('.scg-textcard').querySelector('p');
       const expanded = paragraph.classList.toggle('expanded');
+      if (item) {
+        if (expanded) state.expandedKeys.add(item.selectionKey);
+        else state.expandedKeys.delete(item.selectionKey);
+      }
       setIconButton(expand, 'chevron', expanded ? 'Show less' : 'Show more');
       expand.classList.toggle('expanded', expanded);
       return;
     }
     const download = event.target.closest('[data-download]');
     if (download) {
-      downloadMedia(items[Number(download.dataset.download)]);
+      downloadMedia(itemForNode(download, 'download'));
       return;
     }
     const button = event.target.closest('[data-open]');
     if (!button) return;
-    controllers.viewer.open(items[Number(button.dataset.open)]);
+    controllers.viewer.open(itemForNode(button, 'open'));
   };
   app.querySelector('.scg-grid').addEventListener('load', event => {
     const img = event.target;
     if (!img || img.tagName !== 'IMG' || !img.naturalWidth || !img.naturalHeight) return;
-    const item = state.renderedItems[Number(img.dataset.resolveIndex)];
+    const item = itemForNode(img, 'resolveKey');
     if (!item) return;
     const isThumb = Boolean(item.thumb) && img.currentSrc === absoluteUrl(item.thumb);
     if (!applyMeasuredRatio(item, img.naturalWidth, img.naturalHeight, isThumb ? 'thumb' : 'measured')) return;

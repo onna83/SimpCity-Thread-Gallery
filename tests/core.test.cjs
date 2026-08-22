@@ -934,3 +934,48 @@ test('sticky headers pin within their own section and hand over at the boundary'
   // A section shorter than its own header must not invert.
   assert.equal(stickyHeaderOffset({ top: 10, height: 20 }, 500, 40), 10);
 });
+
+test('cards address their item by key, not by position', () => {
+  // Position-based addressing cannot survive a windowed renderer, where the
+  // mounted set is a moving slice rather than the whole page.
+  assert.doesNotMatch(source, /data-index=/);
+  assert.doesNotMatch(source, /renderedItems\[Number\(/);
+  assert.doesNotMatch(source, /dataset\.resolveIndex/);
+
+  assert.match(source, /data-key="\$\{key\}"/);
+  assert.match(source, /data-resolve-key="\$\{key\}"/);
+  assert.match(source, /function itemsByKey\(\)/);
+  assert.match(source, /itemIndexCache\.revision === datasetRevision/);
+
+  // Every consumer resolves through the map. Exact call sites, so a
+  // half-finished migration cannot pass by matching some other lookup.
+  [
+    "itemForNode(selection, 'select')",
+    "itemForNode(player, 'loadPlayer')",
+    "itemForNode(expand, 'expand')",
+    "itemForNode(download, 'download')",
+    "itemForNode(button, 'open')",
+    "itemForNode(cardNode, 'key')",
+    "itemForNode(img, 'resolveKey')",
+  ].forEach(call => assert.ok(source.includes(call), 'missing lookup: ' + call));
+  assert.match(source, /app\.querySelectorAll\('\.scg-card\[data-key\]'\)/);
+});
+
+test('DOM-only UI state is lifted so unmounting cannot lose it', () => {
+  // Both of these lived purely as classes/innerHTML on the card. The first time
+  // a card unmounts they would silently reset.
+  assert.match(source, /expandedKeys: new Set\(\)/);
+  assert.match(source, /activePlayers: new Set\(\)/);
+
+  // card() must render from that state, not just react to clicks.
+  assert.match(source, /state\.activePlayers\.has\(item\.selectionKey\)/);
+  assert.match(source, /const expanded = state\.expandedKeys\.has\(item\.selectionKey\)/);
+
+  // Clicks record it.
+  assert.match(source, /state\.activePlayers\.add\(item\.selectionKey\)/);
+  assert.match(source, /state\.expandedKeys\.add\(item\.selectionKey\)/);
+  assert.match(source, /state\.expandedKeys\.delete\(item\.selectionKey\)/);
+
+  // Replacing the dataset clears it, since the keys no longer refer to anything.
+  assert.match(source, /state\.expandedKeys\.clear\(\);\s*\r?\n\s*state\.activePlayers\.clear\(\);/);
+});
