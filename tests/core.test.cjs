@@ -101,7 +101,7 @@ test('source retains provenance, memory, download, and ZIP safeguards', () => {
 
 test('gallery UI and media-size controls remain available', () => {
   assert.match(source, /data-ui', 'gallery'/);
-  assert.match(source, /Object\.freeze\(\['masonry', 'grid', 'feed'\]\)/);
+  assert.match(source, /Object\.freeze\(\['masonry', 'flow', 'grid', 'feed'\]\)/);
   assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light'\]\)/);
   assert.match(source, /min="70" max="160" step="5"/);
 });
@@ -992,4 +992,43 @@ test('the accent tints the background from one corner, at a tunable strength', (
 
   // Derived from the accent base, so switching accent moves the tint with it.
   assert.doesNotMatch(source.slice(source.indexOf('.scg-scroll{'), source.indexOf('.scg-top{')), /#[0-9a-f]{6}/i);
+});
+
+test('flow is a windowed layout that positions cards itself', () => {
+  // CSS multi-column cannot be windowed, so flow does its own placement.
+  assert.match(source, /const VIRTUALIZED_LAYOUTS = Object\.freeze\(\['flow'\]\)/);
+  assert.match(source, /packColumns\(entries, flowLayoutOptions\(containerWidth\)\)/);
+  assert.match(source, /\.scg-grid\.flowing\{[\s\S]*?position:relative/);
+  assert.match(source, /\.scg-flow-cell\{[\s\S]*?position:absolute/);
+
+  // The window index must be sorted by y: packColumns emits in item order.
+  assert.match(source, /const ordered = packed\.cells\.slice\(\)\.sort\(\(a, b\) => a\.y - b\.y/);
+  // And the range needs the tallest cell, or a tall card scrolling in from
+  // above would never mount.
+  assert.match(source, /visibleRowRange\(model\.cells, scrollArea\.scrollTop, scrollArea\.clientHeight, FLOW_OVERSCAN, model\.maxCellHeight\)/);
+
+  // Scroll and relayout are both coalesced onto one frame.
+  assert.match(source, /scrollArea\.addEventListener\('scroll'[\s\S]*?scheduleFlowWindow\(\)[\s\S]*?\{ passive: true \}/);
+  assert.match(source, /flow\.frame = requestAnimationFrame/);
+
+  // A late ratio re-packs, and the scroll position is anchored so content
+  // above the fold does not jump under the reader.
+  assert.match(source, /scheduleFlowLayout\(\);/);
+  assert.match(source, /scrollArea\.scrollTop \+= anchorAfter - anchorBefore/);
+
+  // Unmounting has to release media, or scrolling leaks players.
+  assert.match(source, /function releaseFlowNode\(node\)/);
+  assert.match(source, /teardownFlow\(\);/);
+});
+
+test('flow leaves the other layouts and reply grouping on the old path', () => {
+  // Reply grouping needs sectioned markup, which the flat window cannot express
+  // yet, so it stays on the innerHTML path.
+  assert.match(source, /VIRTUALIZED_LAYOUTS\.includes\(state\.layoutMode\) && !state\.scanning && state\.groupBy !== 'reply'/);
+  // The non-virtualized branch is unchanged.
+  assert.match(source, /grid\.innerHTML = state\.scanning[\s\S]*?skeletonMarkup/);
+  assert.match(source, /observeFullImages\(state\.renderedItems\)/);
+  // CSS-column masonry is untouched and still the default.
+  assert.match(source, /\[data-layout="masonry"\] \.scg-grid:not\(\.grouped\)\{display:block;columns:5/);
+  assert.match(source, /layoutMode: 'masonry',/);
 });

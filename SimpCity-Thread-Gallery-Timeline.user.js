@@ -144,7 +144,7 @@
       ? savedSettings.accent
       : (LEGACY_THEME_ACCENTS[savedSettings.theme] || DEFAULT_SETTINGS.accent),
     filtersCollapsed: Boolean(savedSettings.filtersCollapsed),
-    layoutMode: ['masonry', 'grid', 'feed'].includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
+    layoutMode: LAYOUT_MODES.includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
     cardScale: Number.isFinite(Number(savedSettings.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(savedSettings.cardScale) / 5) * 5)) : 100,
     downloadConcurrency: [1, 2, 3, 4].includes(Number(savedSettings.downloadConcurrency)) ? Number(savedSettings.downloadConcurrency) : 2,
     zipPartSizeMb: [100, 300, 600, 1000].includes(Number(savedSettings.zipPartSizeMb)) ? Number(savedSettings.zipPartSizeMb) : 300,
@@ -501,8 +501,11 @@
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
   const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
-  const LAYOUT_MODES = Object.freeze(['masonry', 'grid', 'feed']);
-  const LAYOUT_LABELS = Object.freeze({ masonry: 'Masonry', grid: 'Uniform grid', feed: 'Feed' });
+  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'grid', 'feed']);
+  const LAYOUT_LABELS = Object.freeze({ masonry: 'Masonry', flow: 'Flow', grid: 'Uniform grid', feed: 'Feed' });
+  // Flow is masonry positioned in JS and rendered through a window. CSS
+  // multi-column masonry stays as the default until this proves out.
+  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow']);
   const ICON_PATHS = {
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
     settings: '<circle cx="12" cy="12" r="3.1"/><path d="M19.35 13.4a1.55 1.55 0 0 0 .32 1.72l.05.06a1.85 1.85 0 1 1-2.62 2.62l-.06-.06a1.55 1.55 0 0 0-1.72-.31 1.55 1.55 0 0 0-.94 1.42v.17a1.85 1.85 0 1 1-3.7 0v-.09a1.55 1.55 0 0 0-1-1.42 1.55 1.55 0 0 0-1.72.31l-.06.06a1.85 1.85 0 1 1-2.62-2.62l.06-.06a1.55 1.55 0 0 0 .31-1.72 1.55 1.55 0 0 0-1.42-.94h-.17a1.85 1.85 0 1 1 0-3.7h.09a1.55 1.55 0 0 0 1.42-1 1.55 1.55 0 0 0-.31-1.72l-.06-.06a1.85 1.85 0 1 1 2.62-2.62l.06.06a1.55 1.55 0 0 0 1.72.31h.07a1.55 1.55 0 0 0 .94-1.42v-.17a1.85 1.85 0 1 1 3.7 0v.09a1.55 1.55 0 0 0 .94 1.42 1.55 1.55 0 0 0 1.72-.31l.06-.06a1.85 1.85 0 1 1 2.62 2.62l-.06.06a1.55 1.55 0 0 0-.31 1.72v.07a1.55 1.55 0 0 0 1.42.94h.17a1.85 1.85 0 1 1 0 3.7h-.09a1.55 1.55 0 0 0-1.42.94Z"/>',
@@ -2813,6 +2816,7 @@
   }
 
   function releaseRenderedMedia() {
+    teardownFlow();
     state.imageObserver?.disconnect();
     const grid = document.querySelector(`#${APP_ID} .scg-grid`);
     if (!grid) return;
@@ -2978,7 +2982,10 @@
     pageSelect.disabled = state.scanning;
     app.querySelector('[data-page-size]').disabled = state.scanning;
     app.querySelector('[data-page-size]').value = String(state.perPage);
-    app.querySelector('.scg-view-summary').textContent = `${matchedCount} matched - showing ${state.renderedItems.length}`;
+    const flowing = app.querySelector('.scg-grid')?.classList.contains('flowing');
+    app.querySelector('.scg-view-summary').textContent = flowing
+      ? `${matchedCount} matched - all shown`
+      : `${matchedCount} matched - showing ${state.renderedItems.length}`;
   }
 
   function emptyStateMarkup() {
@@ -2992,6 +2999,210 @@
 
   function skeletonMarkup(count = 12) {
     return Array.from({ length: count }, (_, index) => `<div class="scg-skeleton" aria-hidden="true"><div class="scg-skeleton-media" style="--scg-skeleton-height:${160 + ((index % 4) * 36)}px"></div><div class="scg-skeleton-line"></div><div class="scg-skeleton-line short"></div></div>`).join('');
+  }
+
+  /* ---- Flow: computed masonry with a windowed renderer ---------------------
+     CSS multi-column cannot be virtualized -- the browser must see every box to
+     balance the columns -- so this mode positions cards itself and mounts only
+     the ones near the viewport. Pagination is bypassed here: the whole filtered
+     set is laid out and the window does the limiting.
+     ------------------------------------------------------------------------ */
+
+  const FLOW_OVERSCAN = 900;
+  const FLOW_CHROME = 86;
+
+  const flow = {
+    model: null,
+    mounted: new Map(),
+    range: { start: 0, end: -1 },
+    frame: 0,
+    resizeObserver: null,
+    width: 0,
+  };
+
+  function flowGrid() {
+    const app = document.getElementById(APP_ID);
+    return app && state.layoutMode === 'flow' ? app.querySelector('.scg-grid') : null;
+  }
+
+  function flowScrollArea() {
+    const app = document.getElementById(APP_ID);
+    return app ? app.querySelector('.scg-scroll') : null;
+  }
+
+  function flowLayoutOptions(containerWidth) {
+    const scale = Math.min(160, Math.max(70, Number(state.cardScale) || 100)) / 100;
+    return {
+      containerWidth,
+      columnWidth: Math.round((state.compact ? 195 : 280) * scale),
+      gap: state.compact ? 10 : 14,
+      chromeHeight: FLOW_CHROME,
+      assumedRatio: assumedRatio(),
+    };
+  }
+
+  function buildFlowModel(containerWidth) {
+    const entries = state.renderedItems.map(item => ({ key: item.selectionKey, ratio: itemRatio(item) }));
+    const packed = packColumns(entries, flowLayoutOptions(containerWidth));
+    const byKey = new Map();
+    let maxCellHeight = 0;
+    packed.cells.forEach(cell => {
+      byKey.set(cell.key, cell);
+      if (cell.height > maxCellHeight) maxCellHeight = cell.height;
+    });
+    // visibleRowRange binary-searches on y, so the index it walks must be
+    // sorted by y. Column packing emits in item order, which is not.
+    const ordered = packed.cells.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+    return { cells: ordered, byKey, height: packed.height, columns: packed.columns, maxCellHeight, width: containerWidth };
+  }
+
+  function positionFlowCard(node, cell) {
+    node.style.left = cell.x + 'px';
+    node.style.top = cell.y + 'px';
+    node.style.width = cell.width + 'px';
+    node.style.height = cell.height + 'px';
+  }
+
+  const flowTemplate = document.createElement('template');
+
+  function mountFlowCard(grid, cell) {
+    const item = itemsByKey().get(cell.key);
+    if (!item) return;
+    flowTemplate.innerHTML = card(item);
+    const node = flowTemplate.content.firstElementChild;
+    if (!node) return;
+    node.classList.add('scg-flow-cell');
+    positionFlowCard(node, cell);
+    grid.appendChild(node);
+    flow.mounted.set(cell.key, node);
+    // No IntersectionObserver here: anything mounted is already inside the
+    // overscan band, so resolution can start immediately.
+    if (item.type === 'image') {
+      const img = node.querySelector('img[data-resolve-key]');
+      if (img) {
+        resolveForDisplay(item).then(result => {
+          if (result.url && img.isConnected && img.src !== result.url) img.src = result.url;
+        }).catch(() => {});
+      }
+    }
+  }
+
+  function releaseFlowNode(node) {
+    node.querySelectorAll('video').forEach(video => {
+      try { video.pause(); } catch { /* Detached player. */ }
+      video.removeAttribute('src');
+      try { video.load(); } catch { /* Detached player. */ }
+    });
+    node.querySelectorAll('iframe').forEach(frame => frame.setAttribute('src', 'about:blank'));
+    node.remove();
+  }
+
+  function unmountFlowCards(keep) {
+    flow.mounted.forEach((node, key) => {
+      if (keep.has(key)) return;
+      releaseFlowNode(node);
+      flow.mounted.delete(key);
+    });
+  }
+
+  function updateFlowWindow() {
+    const grid = flowGrid();
+    const scrollArea = flowScrollArea();
+    const model = flow.model;
+    if (!grid || !scrollArea || !model) return;
+    const range = visibleRowRange(model.cells, scrollArea.scrollTop, scrollArea.clientHeight, FLOW_OVERSCAN, model.maxCellHeight);
+    flow.range = range;
+    const keep = new Set();
+    for (let index = range.start; index <= range.end; index++) keep.add(model.cells[index].key);
+    unmountFlowCards(keep);
+    for (let index = range.start; index <= range.end; index++) {
+      const cell = model.cells[index];
+      if (!flow.mounted.has(cell.key)) mountFlowCard(grid, cell);
+    }
+    updateSelectionUi();
+  }
+
+  // Re-packing moves everything below a changed card. Anchoring on the first
+  // mounted cell and correcting scrollTop by its delta keeps what the reader is
+  // looking at where it was.
+  function relayoutFlow() {
+    const grid = flowGrid();
+    const scrollArea = flowScrollArea();
+    if (!grid || !scrollArea) return;
+    const width = grid.clientWidth;
+    if (width <= 0) return;
+    const anchorKey = flow.model && flow.range.end >= flow.range.start
+      ? flow.model.cells[flow.range.start].key
+      : null;
+    const anchorBefore = anchorKey ? flow.model.byKey.get(anchorKey)?.y : null;
+
+    flow.width = width;
+    flow.model = buildFlowModel(width);
+    grid.style.height = flow.model.height + 'px';
+
+    if (anchorKey != null && anchorBefore != null) {
+      const anchorAfter = flow.model.byKey.get(anchorKey)?.y;
+      if (anchorAfter != null && anchorAfter !== anchorBefore) {
+        scrollArea.scrollTop += anchorAfter - anchorBefore;
+      }
+    }
+
+    flow.mounted.forEach((node, key) => {
+      const cell = flow.model.byKey.get(key);
+      if (cell) positionFlowCard(node, cell);
+    });
+    updateFlowWindow();
+  }
+
+  function scheduleFlowLayout() {
+    if (flow.frame || state.layoutMode !== 'flow') return;
+    flow.frame = requestAnimationFrame(() => {
+      flow.frame = 0;
+      relayoutFlow();
+    });
+  }
+
+  function scheduleFlowWindow() {
+    if (flow.frame || state.layoutMode !== 'flow') return;
+    flow.frame = requestAnimationFrame(() => {
+      flow.frame = 0;
+      updateFlowWindow();
+    });
+  }
+
+  function teardownFlow() {
+    flow.mounted.forEach(node => releaseFlowNode(node));
+    flow.mounted.clear();
+    flow.model = null;
+    flow.range = { start: 0, end: -1 };
+    flow.width = 0;
+    const app = document.getElementById(APP_ID);
+    const grid = app && app.querySelector('.scg-grid');
+    if (grid) grid.style.removeProperty('height');
+  }
+
+  function ensureFlowResizeObserver() {
+    if (flow.resizeObserver || typeof ResizeObserver !== 'function') return;
+    const app = document.getElementById(APP_ID);
+    const grid = app && app.querySelector('.scg-grid');
+    if (!grid) return;
+    flow.resizeObserver = new ResizeObserver(() => {
+      if (state.layoutMode !== 'flow') return;
+      // Height changes come from our own re-packing; only width matters.
+      if (grid.clientWidth === flow.width) return;
+      scheduleFlowLayout();
+    });
+    flow.resizeObserver.observe(grid);
+  }
+
+  function renderFlow() {
+    const grid = flowGrid();
+    if (!grid) return;
+    grid.replaceChildren();
+    flow.mounted.clear();
+    flow.model = null;
+    ensureFlowResizeObserver();
+    relayoutFlow();
   }
 
   function render() {
@@ -3024,19 +3235,34 @@
     refreshFilterControls();
     const matched = state.scanning ? [] : visibleItems();
     state.replyIndex = !state.scanning && state.groupBy === 'reply' ? buildReplyIndex(matched) : null;
-    const pages = buildViewPages(matched);
-    state.viewPages = pages.length;
-    state.viewPage = Math.min(Math.max(1, state.viewPage), state.viewPages);
-    state.renderedItems = pages[state.viewPage - 1] || [];
+    // Reply grouping still needs the sectioned markup path, so flow only takes
+    // over when the grid is a flat list.
+    const virtualized = VIRTUALIZED_LAYOUTS.includes(state.layoutMode) && !state.scanning && state.groupBy !== 'reply';
+    if (virtualized) {
+      state.viewPages = 1;
+      state.viewPage = 1;
+      state.renderedItems = matched;
+    } else {
+      const pages = buildViewPages(matched);
+      state.viewPages = pages.length;
+      state.viewPage = Math.min(Math.max(1, state.viewPage), state.viewPages);
+      state.renderedItems = pages[state.viewPage - 1] || [];
+    }
     const grid = app.querySelector('.scg-grid');
     releaseRenderedMedia();
     grid.classList.toggle('grouped', state.groupBy === 'reply');
-    grid.innerHTML = state.scanning
-      ? skeletonMarkup(state.compact ? 16 : 12)
-      : state.renderedItems.length
-        ? (state.groupBy === 'reply' ? replyGroupsMarkup(state.renderedItems) : state.renderedItems.map(item => card(item)).join(''))
-        : emptyStateMarkup();
-    if (!state.scanning) observeFullImages(state.renderedItems);
+    grid.classList.toggle('flowing', virtualized);
+    if (virtualized) {
+      if (state.renderedItems.length) renderFlow();
+      else grid.innerHTML = emptyStateMarkup();
+    } else {
+      grid.innerHTML = state.scanning
+        ? skeletonMarkup(state.compact ? 16 : 12)
+        : state.renderedItems.length
+          ? (state.groupBy === 'reply' ? replyGroupsMarkup(state.renderedItems) : state.renderedItems.map(item => card(item)).join(''))
+          : emptyStateMarkup();
+      if (!state.scanning) observeFullImages(state.renderedItems);
+    }
     app.querySelector('.scg-status').textContent = state.scanning
       ? `Scanning ${state.scannedPages || 1} of ${state.threadPageCount}`
       : state.sourceLabel;
@@ -4318,6 +4544,39 @@
     #${APP_ID}[data-layout="masonry"].compact .scg-card,
     #${APP_ID}[data-layout="masonry"].compact .scg-skeleton{margin-bottom:10px}
 
+    /* Layout: flow (computed masonry, windowed). The grid becomes a spacer of
+       known height and every card is placed absolutely, so only what is near
+       the viewport is ever in the DOM. */
+    #${APP_ID}[data-layout="flow"] .scg-grid.flowing{
+      position:relative;display:block;columns:auto;
+    }
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell{
+      position:absolute;margin:0;
+      display:flex;flex-direction:column;
+      contain:layout paint style;
+    }
+    /* The media area absorbs the difference between the estimated chrome height
+       and the real one, so a slightly wrong estimate shows a little more or less
+       image rather than clipping the controls. */
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-preview,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell>video,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-embed,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-host{
+      flex:1;min-height:0;
+    }
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-preview img,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell>video{
+      width:100%;height:100%;max-height:none;aspect-ratio:auto;object-fit:cover;
+    }
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-embed{aspect-ratio:auto}
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-textcard p,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell>p{min-height:0;flex:1}
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-actions,
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-meta{flex:none}
+    /* Absolute positioning already isolates each card; lifting on hover would
+       fight the measured geometry. */
+    #${APP_ID}[data-layout="flow"] .scg-flow-cell:hover{transform:none}
+
     /* Layout: uniform grid */
     #${APP_ID}[data-layout="grid"] .scg-grid:not(.grouped),
     #${APP_ID}[data-layout="grid"] .scg-group-grid{
@@ -5552,6 +5811,7 @@
           </span>
           <div class="scg-layout-switcher" role="group" aria-label="Gallery layout">
             <button data-layout-mode="masonry" data-tooltip="Masonry layout (L)" aria-pressed="true">${iconWell('masonry')}<span>Masonry</span></button>
+            <button data-layout-mode="flow" data-tooltip="Flow: masonry that renders only what is on screen, for very large threads (L)" aria-pressed="false">${iconWell('layout')}<span>Flow</span></button>
             <button data-layout-mode="grid" data-tooltip="Uniform grid layout (L)" aria-pressed="false">${iconWell('grid')}<span>Grid</span></button>
             <button data-layout-mode="feed" data-tooltip="Wide feed layout (L)" aria-pressed="false">${iconWell('feed')}<span>Feed</span></button>
           </div>
@@ -5609,7 +5869,7 @@
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="flow">Flow (virtualized)</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -5849,7 +6109,10 @@
     scrollArea.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     app.querySelector('[data-search]')?.focus({ preventScroll: true });
   };
-  scrollArea.onscroll = () => topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
+  scrollArea.addEventListener('scroll', () => {
+    topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
+    scheduleFlowWindow();
+  }, { passive: true });
   app.querySelector('.scg-grid').onclick = event => {
     const replySelect = event.target.closest('[data-reply-select]');
     if (replySelect) {
@@ -5913,6 +6176,7 @@
     const isThumb = Boolean(item.thumb) && img.currentSrc === absoluteUrl(item.thumb);
     if (!applyMeasuredRatio(item, img.naturalWidth, img.naturalHeight, isThumb ? 'thumb' : 'measured')) return;
     img.closest('.scg-card')?.style.setProperty('--scg-ratio', String(item.ratio.value));
+    scheduleFlowLayout();
   }, true);
   app.querySelector('.scg-lightbox').onclick = event => { if (event.target.classList.contains('scg-lightbox')) closeLightbox(); };
   document.addEventListener('keydown', event => {
