@@ -19,3 +19,7 @@ SimpCity Thread Gallery*.js
 Thumbs.db
 *.log
 
+# Local AI assistant configuration.
+.agents/
+.claude/
+skills-lock.json
