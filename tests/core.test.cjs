@@ -771,3 +771,166 @@ test('stored midnight and graphite settings migrate to dark plus an accent', () 
   // A real theme is untouched.
   assert.equal(normalizedPreferences({ theme: 'light' }).theme, 'light');
 });
+
+function loadLayoutEngine() {
+  return evaluateSlice(
+    'function partitionSections',
+    'const IMAGE_EXT',
+    ['partitionSections', 'packColumns', 'justifyRows', 'stackSections', 'visibleRowRange', 'stickyHeaderOffset'],
+    {
+      clampRatio: value => {
+        const ratio = Number(value);
+        if (!Number.isFinite(ratio) || ratio <= 0) return 0;
+        return Math.min(4, Math.max(0.32, ratio));
+      },
+    },
+  );
+}
+
+const entriesOf = (count, ratio) =>
+  Array.from({ length: count }, (_, index) => ({ key: 'k' + index, ratio }));
+
+test('sections chunk ungrouped items and follow reply boundaries when grouped', () => {
+  const { partitionSections } = loadLayoutEngine();
+
+  const chunked = partitionSections(entriesOf(450, 1), { chunkSize: 200 });
+  assert.equal(chunked.map(section => section.entries.length).join(','), '200,200,50');
+  // Empty input still yields one section so callers never special-case it.
+  assert.equal(partitionSections([], {}).length, 1);
+  assert.equal(partitionSections([], {})[0].entries.length, 0);
+
+  const grouped = partitionSections([
+    { key: 'a', ratio: 1, sectionId: 'r1', sectionLabel: 'Reply #1' },
+    { key: 'b', ratio: 1, sectionId: 'r2', sectionLabel: 'Reply #2' },
+    { key: 'c', ratio: 1, sectionId: 'r1', sectionLabel: 'Reply #1' },
+  ], { groupBy: 'reply' });
+  assert.equal(grouped.length, 2);
+  assert.equal(grouped[0].label, 'Reply #1');
+  // Order of first appearance is preserved, and a group gathers its members.
+  assert.equal(grouped[0].entries.map(entry => entry.key).join(','), 'a,c');
+  assert.equal(grouped[1].entries.map(entry => entry.key).join(','), 'b');
+});
+
+test('masonry packs into the shortest column and never overflows the container', () => {
+  const { packColumns } = loadLayoutEngine();
+  const options = { containerWidth: 1000, columnWidth: 240, gap: 10, chromeHeight: 0, assumedRatio: 1 };
+
+  const square = packColumns(entriesOf(4, 1), options);
+  assert.equal(square.columns, 4);
+  // Columns tile the width exactly: last right edge lands on the container.
+  const last = square.cells[3];
+  assert.ok(last.x + last.width <= 1000, 'grid must not overflow');
+  assert.equal(square.cells[0].y, 0);
+  assert.equal(square.cells[3].y, 0);
+
+  // A tall first item pushes the fifth into the shortest column, not the first.
+  const uneven = packColumns(
+    [{ key: 'tall', ratio: 0.4 }, ...entriesOf(4, 2).map((e, i) => ({ ...e, key: 'w' + i }))],
+    options,
+  );
+  const tall = uneven.cells[0];
+  const fifth = uneven.cells[4];
+  assert.ok(tall.height > fifth.height, 'the 0.4 ratio card should be the tallest');
+  assert.notEqual(fifth.x, tall.x, 'the shortest column must win, not the first');
+
+  assert.equal(packColumns([], options).height, 0);
+  // A container narrower than one column still yields a usable single column.
+  assert.equal(packColumns(entriesOf(2, 1), { ...options, containerWidth: 100 }).columns, 1);
+});
+
+test('justified rows fill the width exactly and never stretch a short last row', () => {
+  const { justifyRows } = loadLayoutEngine();
+  const options = { containerWidth: 1000, gap: 10, targetHeight: 200, chromeHeight: 0, assumedRatio: 1 };
+
+  const rows = justifyRows(entriesOf(9, 1), options);
+  const byRow = new Map();
+  rows.cells.forEach(cell => {
+    if (!byRow.has(cell.y)) byRow.set(cell.y, []);
+    byRow.get(cell.y).push(cell);
+  });
+  // Every full row spans the container exactly -- this is the property that
+  // removes sub-pixel seams at the right edge.
+  const ys = [...byRow.keys()].sort((a, b) => a - b);
+  ys.slice(0, -1).forEach(y => {
+    const row = byRow.get(y);
+    const right = row[row.length - 1];
+    assert.equal(right.x + right.width, 1000);
+  });
+  // Cells within a row share a height.
+  ys.forEach(y => {
+    const row = byRow.get(y);
+    row.forEach(cell => assert.equal(cell.height, row[0].height));
+  });
+
+  // One wide item alone on the last row must not be blown up to fill it.
+  // ratio 5 clamps to 4, so the natural height is 1000/4 = 250. The cap has to
+  // sit below that for the non-stretch branch to be the one under test.
+  const trailing = justifyRows([{ key: 'a', ratio: 5 }], { ...options, maxRowHeight: 220 });
+  assert.equal(trailing.cells.length, 1);
+  assert.equal(trailing.cells[0].height, 200);
+  assert.ok(trailing.cells[0].x + trailing.cells[0].width < 1000, 'short last row keeps natural width');
+
+  // Unknown ratios fall back rather than producing NaN geometry.
+  const unknown = justifyRows([{ key: 'a' }, { key: 'b', ratio: 0 }], options);
+  unknown.cells.forEach(cell => {
+    assert.ok(Number.isFinite(cell.width) && cell.width > 0);
+    assert.ok(Number.isFinite(cell.height) && cell.height > 0);
+  });
+
+  assert.equal(justifyRows([], options).height, 0);
+});
+
+test('sections stack with headers and report a total height', () => {
+  const { stackSections } = loadLayoutEngine();
+  const stacked = stackSections(
+    [{ id: 'a', label: 'A', height: 100 }, { id: 'b', label: 'B', height: 50 }],
+    { gap: 10, headerHeight: 20, startTop: 0 },
+  );
+  assert.equal(stacked.sections[0].top, 0);
+  assert.equal(stacked.sections[0].height, 120);
+  assert.equal(stacked.sections[1].top, 130);
+  // Trailing gap is not counted, so the spacer matches the content.
+  assert.equal(stacked.totalHeight, 200);
+  assert.equal(stackSections([], { gap: 10 }).totalHeight, 0);
+});
+
+test('the render window finds every intersecting cell, including tall stragglers', () => {
+  const { visibleRowRange } = loadLayoutEngine();
+  const cells = [
+    { key: 'tall', y: 0, height: 900 },
+    { key: 'a', y: 100, height: 100 },
+    { key: 'b', y: 500, height: 100 },
+    { key: 'c', y: 1000, height: 100 },
+    { key: 'd', y: 2000, height: 100 },
+  ];
+
+  const window = visibleRowRange(cells, 600, 300, 0, 900);
+  // 'tall' starts far above but still overlaps: the backward walk must catch it.
+  assert.equal(window.start, 0);
+  // c starts at y=1000, below the window bottom at 900, so b is the last one in.
+  assert.equal(cells[window.end].key, 'b');
+
+  const overscanned = visibleRowRange(cells, 600, 300, 1200, 900);
+  assert.equal(cells[overscanned.end].key, 'd');
+
+  // Scrolled past everything.
+  assert.equal(visibleRowRange(cells, 9000, 300, 0, 900).end, -1);
+  assert.equal(visibleRowRange([], 0, 300, 0, 900).end, -1);
+  // Without a known tallest cell the range must widen, never drop a cell.
+  assert.equal(visibleRowRange(cells, 600, 300, 0).start, 0);
+});
+
+test('sticky headers pin within their own section and hand over at the boundary', () => {
+  const { stickyHeaderOffset } = loadLayoutEngine();
+  const section = { top: 1000, height: 500 };
+
+  // Above the section: parked at the top.
+  assert.equal(stickyHeaderOffset(section, 0, 40), 1000);
+  // Inside: follows the scroll.
+  assert.equal(stickyHeaderOffset(section, 1200, 40), 1200);
+  // Near the end: stops so the next section pushes it off rather than overlapping.
+  assert.equal(stickyHeaderOffset(section, 1490, 40), 1460);
+  assert.equal(stickyHeaderOffset(section, 99999, 40), 1460);
+  // A section shorter than its own header must not invert.
+  assert.equal(stickyHeaderOffset({ top: 10, height: 20 }, 500, 40), 10);
+});

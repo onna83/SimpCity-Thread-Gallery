@@ -319,6 +319,181 @@
     if (hint) item.ratio = { value: hint, source: 'attr', width: item.dimHint.width, height: item.dimHint.height };
   }
 
+  /* ---- Layout engine -------------------------------------------------------
+     Pure geometry: no state, no DOM. Produces absolutely-positioned cells that
+     a windowed renderer can mount a slice of. Everything between here and
+     IMAGE_EXT is directly exercisable by the test harness.
+     ------------------------------------------------------------------------ */
+
+  // Sections bound how much has to be recomputed when one late ratio arrives.
+  // Reply grouping makes them meaningful units; otherwise they are fixed
+  // chunks, so a measurement at item 4000 never re-partitions item 30.
+  function partitionSections(entries, options) {
+    const chunkSize = Math.max(1, (options && options.chunkSize) || 200);
+    if (!options || options.groupBy !== 'reply') {
+      const sections = [];
+      for (let index = 0; index < entries.length; index += chunkSize) {
+        sections.push({
+          id: 'chunk-' + (sections.length + 1),
+          label: '',
+          entries: entries.slice(index, index + chunkSize),
+        });
+      }
+      return sections.length ? sections : [{ id: 'chunk-1', label: '', entries: [] }];
+    }
+    const groups = new Map();
+    entries.forEach(entry => {
+      const id = String(entry.sectionId === undefined ? '' : entry.sectionId);
+      if (!groups.has(id)) groups.set(id, { id, label: entry.sectionLabel || '', entries: [] });
+      groups.get(id).entries.push(entry);
+    });
+    return [...groups.values()];
+  }
+
+  function entryRatio(entry, fallback) {
+    const ratio = clampRatio(entry && entry.ratio);
+    return ratio || fallback;
+  }
+
+  // Masonry, computed rather than CSS multi-column: shortest column wins. CSS
+  // columns cannot be virtualized because the browser must see every box to
+  // balance them.
+  function packColumns(entries, options) {
+    const gap = options.gap;
+    const chromeHeight = options.chromeHeight || 0;
+    const fallback = options.assumedRatio || 0.72;
+    const columns = Math.max(1, Math.floor((options.containerWidth + gap) / (options.columnWidth + gap)));
+    const width = Math.floor((options.containerWidth - (gap * (columns - 1))) / columns);
+    const bottoms = new Array(columns).fill(0);
+    const cells = entries.map(entry => {
+      let shortest = 0;
+      for (let column = 1; column < columns; column++) {
+        if (bottoms[column] < bottoms[shortest]) shortest = column;
+      }
+      const height = Math.round(width / entryRatio(entry, fallback)) + chromeHeight;
+      const cell = {
+        key: entry.key,
+        x: shortest * (width + gap),
+        y: bottoms[shortest],
+        width,
+        height,
+      };
+      bottoms[shortest] += height + gap;
+      return cell;
+    });
+    const tallest = bottoms.reduce((max, value) => (value > max ? value : max), 0);
+    return { cells, columns, columnWidth: width, height: Math.max(0, tallest - gap) };
+  }
+
+  // Justified rows: fill greedily to the target height, then scale the row so
+  // it spans the container exactly. The rounding remainder goes to the last
+  // cell, which is what removes sub-pixel seams at the right edge.
+  function justifyRows(entries, options) {
+    const gap = options.gap;
+    const chromeHeight = options.chromeHeight || 0;
+    const fallback = options.assumedRatio || 0.72;
+    const targetHeight = options.targetHeight;
+    const maxRowHeight = options.maxRowHeight || (targetHeight * 1.6);
+    const containerWidth = options.containerWidth;
+    const cells = [];
+    let row = [];
+    let sumRatio = 0;
+    let top = 0;
+    let rows = 0;
+
+    const flush = isLast => {
+      if (!row.length) return;
+      const available = containerWidth - (gap * (row.length - 1));
+      const natural = available / sumRatio;
+      // A single trailing image stretched to fill the width is the classic
+      // justified-layout disfigurement. Leave the gap instead.
+      const stretch = !isLast || natural <= maxRowHeight;
+      const height = Math.round(stretch ? natural : targetHeight);
+      let x = 0;
+      row.forEach((entry, index) => {
+        const isLastCell = index === row.length - 1;
+        const width = isLastCell && stretch
+          ? Math.max(1, containerWidth - x)
+          : Math.round(entryRatio(entry, fallback) * height);
+        cells.push({ key: entry.key, x, y: top, width, height: height + chromeHeight });
+        x += width + gap;
+      });
+      top += height + chromeHeight + gap;
+      rows += 1;
+      row = [];
+      sumRatio = 0;
+    };
+
+    entries.forEach(entry => {
+      row.push(entry);
+      sumRatio += entryRatio(entry, fallback);
+      const available = containerWidth - (gap * (row.length - 1));
+      if (available / sumRatio <= targetHeight) flush(false);
+    });
+    flush(true);
+
+    return { cells, rows, height: Math.max(0, top - gap) };
+  }
+
+  function stackSections(sections, options) {
+    const gap = options.gap;
+    const headerHeight = options.headerHeight || 0;
+    let top = options.startTop || 0;
+    const stacked = sections.map(section => {
+      const height = headerHeight + section.height;
+      const placed = { id: section.id, label: section.label, top, height, headerHeight };
+      top += height + gap;
+      return placed;
+    });
+    return { sections: stacked, totalHeight: Math.max(0, top - gap) };
+  }
+
+  // Cells must be ordered by y. Tops are monotonic; bottoms are not, because a
+  // tall cell can start far above and still intersect. Walking backwards from
+  // the lower bound is not enough -- it stops at the first non-overlapping
+  // cell and misses anything taller behind it -- so the search starts a full
+  // maxCellHeight early instead. Callers know that value from the model; when
+  // it is unknown the range degrades to correct-but-wide rather than wrong.
+  function visibleRowRange(cells, scrollTop, viewportHeight, overscanPx, maxCellHeight) {
+    if (!cells.length) return { start: 0, end: -1 };
+    const overscan = overscanPx || 0;
+    const min = scrollTop - overscan;
+    const max = scrollTop + viewportHeight + overscan;
+    const reach = Number.isFinite(maxCellHeight) ? Math.max(0, maxCellHeight) : Infinity;
+    const lowerBound = reach === Infinity ? -Infinity : min - reach;
+
+    let lo = 0;
+    let hi = cells.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cells[mid].y >= lowerBound) hi = mid;
+      else lo = mid + 1;
+    }
+    let start = lo;
+
+    lo = 0;
+    hi = cells.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cells[mid].y <= max) lo = mid + 1;
+      else hi = mid;
+    }
+    const end = lo - 1;
+    if (start > end) return { start: 0, end: -1 };
+    // Trim leading cells that the widened lower bound swept in but which do not
+    // actually reach the window.
+    while (start <= end && cells[start].y + cells[start].height < min) start += 1;
+    return start > end ? { start: 0, end: -1 } : { start, end };
+  }
+
+  // CSS position:sticky does not apply among absolutely positioned siblings,
+  // so the pinned offset is computed instead.
+  function stickyHeaderOffset(section, scrollTop, headerHeight) {
+    const min = section.top;
+    const max = Math.max(min, section.top + section.height - headerHeight);
+    return Math.min(Math.max(scrollTop, min), max);
+  }
+
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
@@ -329,7 +504,7 @@
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
     settings: '<circle cx="12" cy="12" r="3.1"/><path d="M19.35 13.4a1.55 1.55 0 0 0 .32 1.72l.05.06a1.85 1.85 0 1 1-2.62 2.62l-.06-.06a1.55 1.55 0 0 0-1.72-.31 1.55 1.55 0 0 0-.94 1.42v.17a1.85 1.85 0 1 1-3.7 0v-.09a1.55 1.55 0 0 0-1-1.42 1.55 1.55 0 0 0-1.72.31l-.06.06a1.85 1.85 0 1 1-2.62-2.62l.06-.06a1.55 1.55 0 0 0 .31-1.72 1.55 1.55 0 0 0-1.42-.94h-.17a1.85 1.85 0 1 1 0-3.7h.09a1.55 1.55 0 0 0 1.42-1 1.55 1.55 0 0 0-.31-1.72l-.06-.06a1.85 1.85 0 1 1 2.62-2.62l.06.06a1.55 1.55 0 0 0 1.72.31h.07a1.55 1.55 0 0 0 .94-1.42v-.17a1.85 1.85 0 1 1 3.7 0v.09a1.55 1.55 0 0 0 .94 1.42 1.55 1.55 0 0 0 1.72-.31l.06-.06a1.85 1.85 0 1 1 2.62 2.62l-.06.06a1.55 1.55 0 0 0-.31 1.72v.07a1.55 1.55 0 0 0 1.42.94h.17a1.85 1.85 0 1 1 0 3.7h-.09a1.55 1.55 0 0 0-1.42.94Z"/>',
     layout: '<rect x="3.25" y="4.25" width="7.25" height="7.25" rx="1.6"/><rect x="13.5" y="4.25" width="7.25" height="4.5" rx="1.6"/><rect x="3.25" y="14.5" width="7.25" height="5.25" rx="1.6"/><rect x="13.5" y="11.75" width="7.25" height="8" rx="1.6"/>',
-    keyboard: '<rect x="2.75" y="6" width="18.5" height="12" rx="2.5"/><path d="M6.5 9.75h.01M10 9.75h.01M13.5 9.75h.01M17 9.75h.01M6.5 13.9h.01M17 13.9h.01M9.5 13.9h5" stroke-width="2.1"/>',
+    keyboard: '<rect x="2.75" y="6" width="18.5" height="12" rx="2.5"/><path d="M6.5 9.75h.01M10 9.75h.01M13.5 9.75h.01M17 9.75h.01M6.5 13.9h.01M17 13.9h.01M9.5 13.9h5" stroke-width="2.4"/>',
     close: '<path d="m6.75 6.75 10.5 10.5M17.25 6.75 6.75 17.25"/>',
     download: '<path d="M12 3.75v10.5m0 0 3.75-3.75M12 14.25 8.25 10.5"/><path d="M4.25 16.25v2a2 2 0 0 0 2 2h11.5a2 2 0 0 0 2-2v-2"/>',
     select: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.2 2.7 2.7L16.2 9.4"/>',
@@ -338,14 +513,14 @@
     copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
     reset: '<path d="M20.25 12a8.25 8.25 0 1 1-2.42-5.83"/><path d="M20.25 4.5V10h-5.5"/>',
     upload: '<path d="M12 15V4.5m0 0L8.25 8.25M12 4.5l3.75 3.75"/><path d="M4.25 16.25v2a2 2 0 0 0 2 2h11.5a2 2 0 0 0 2-2v-2"/>',
-    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11.25v5"/><path d="M12 7.9h.01" stroke-width="2.2"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11.25v5"/><path d="M12 7.9h.01" stroke-width="2.4"/>',
     filter: '<path d="M4 5.25h16l-6.15 7v5.35l-3.7 1.65V12.25Z"/>',
     sliders: '<path d="M4.5 7.5h9M17.5 7.5h2M4.5 16.5h2M10.5 16.5h9"/><circle cx="15.5" cy="7.5" r="2.25"/><circle cx="8.5" cy="16.5" r="2.25"/>',
     sun: '<circle cx="12" cy="12" r="3.9"/><path d="M12 2.75v1.9M12 19.35v1.9M4.72 4.72l1.35 1.35M17.93 17.93l1.35 1.35M2.75 12h1.9M19.35 12h1.9M4.72 19.28l1.35-1.35M17.93 6.07l1.35-1.35"/>',
     moon: '<path d="M20.25 14.6A8.75 8.75 0 0 1 9.4 3.75a8.75 8.75 0 1 0 10.85 10.85Z"/>',
     palette: '<path d="M12 3.25a8.75 8.75 0 0 0 0 17.5h1.15a1.9 1.9 0 0 0 1.35-3.25l-.3-.3a1.35 1.35 0 0 1 .95-2.3h1.6a4.5 4.5 0 0 0 4.5-4.5c0-3.95-4.15-7.15-9.25-7.15Z"/><circle cx="7.9" cy="10.4" r="1.05"/><circle cx="10.4" cy="7.1" r="1.05"/><circle cx="14" cy="7.1" r="1.05"/><circle cx="16.6" cy="10.4" r="1.05"/>',
     chevron: '<path d="m6.75 9.75 5.25 5 5.25-5"/>',
-    more: '<path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.6"/>',
+    more: '<path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.4"/>',
     scan: '<path d="M3.75 8V5.75a2 2 0 0 1 2-2H8M16 3.75h2.25a2 2 0 0 1 2 2V8M20.25 16v2.25a2 2 0 0 1-2 2H16M8 20.25H5.75a2 2 0 0 1-2-2V16"/><path d="M7.5 12h9"/>',
     masonry: '<rect x="3.5" y="3.5" width="7" height="10.25" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="6" rx="1.6"/><rect x="3.5" y="16" width="7" height="4.5" rx="1.6"/><rect x="13.5" y="11.75" width="7" height="8.75" rx="1.6"/>',
     grid: '<rect x="3.5" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="3.5" y="13.25" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="13.25" width="7.25" height="7.25" rx="1.6"/>',
