@@ -51,9 +51,17 @@
     includeManifest: true,
     dedupeContent: true,
     warnLargeThreadScan: true,
+    accent: 'blue',
   });
-  const THEME_MODES = Object.freeze(['dark', 'light', 'midnight', 'graphite']);
-  const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight', midnight: 'Indigo', graphite: 'Graphite' });
+  const THEME_MODES = Object.freeze(['dark', 'light']);
+  const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight' });
+  const ACCENT_MODES = Object.freeze(['blue', 'indigo', 'amber', 'green', 'rose', 'neutral']);
+  const ACCENT_LABELS = Object.freeze({
+    blue: 'Blue', indigo: 'Indigo', amber: 'Amber', green: 'Green', rose: 'Rose', neutral: 'Neutral',
+  });
+  // Indigo and Graphite were whole themes that only differed from Darkroom by
+  // hue. They survive as accents on the dark theme.
+  const LEGACY_THEME_ACCENTS = Object.freeze({ midnight: 'indigo', graphite: 'amber' });
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500]);
 
   const storage = {
@@ -129,7 +137,12 @@
     sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
     groupBy: savedSettings.groupBy === 'reply' ? 'reply' : 'none',
     perPage: VIEW_PAGE_SIZES.includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : DEFAULT_SETTINGS.perPage,
-    theme: THEME_MODES.includes(savedSettings.theme) ? savedSettings.theme : DEFAULT_SETTINGS.theme,
+    theme: THEME_MODES.includes(savedSettings.theme)
+      ? savedSettings.theme
+      : (LEGACY_THEME_ACCENTS[savedSettings.theme] ? 'dark' : DEFAULT_SETTINGS.theme),
+    accent: ACCENT_MODES.includes(savedSettings.accent)
+      ? savedSettings.accent
+      : (LEGACY_THEME_ACCENTS[savedSettings.theme] || DEFAULT_SETTINGS.accent),
     filtersCollapsed: Boolean(savedSettings.filtersCollapsed),
     layoutMode: ['masonry', 'grid', 'feed'].includes(savedSettings.layoutMode) ? savedSettings.layoutMode : 'masonry',
     cardScale: Number.isFinite(Number(savedSettings.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(savedSettings.cardScale) / 5) * 5)) : 100,
@@ -683,6 +696,7 @@
         groupBy: state.groupBy,
         perPage: state.perPage,
         theme: state.theme,
+        accent: state.accent,
         filtersCollapsed: state.filtersCollapsed,
         layoutMode: state.layoutMode,
         cardScale: state.cardScale,
@@ -721,6 +735,7 @@
     const app = document.getElementById(APP_ID);
     if (!app) return;
     app.dataset.theme = state.theme;
+    app.dataset.accent = state.accent;
     app.dataset.layout = state.layoutMode;
     const cardScale = Math.min(160, Math.max(70, Number(state.cardScale) || 100));
     const scale = cardScale / 100;
@@ -735,9 +750,9 @@
     app.classList.toggle('compact', state.compact);
     app.classList.toggle('filters-collapsed', state.filtersCollapsed);
     const toast = document.getElementById('scg-tl-toast');
-    if (toast) toast.dataset.theme = state.theme;
+    if (toast) { toast.dataset.theme = state.theme; toast.dataset.accent = state.accent; }
     const launch = document.getElementById('scg-tl-launch');
-    if (launch) launch.dataset.theme = state.theme;
+    if (launch) { launch.dataset.theme = state.theme; launch.dataset.accent = state.accent; }
     const filterToggle = app.querySelector('[data-action="filters-toggle"]');
     if (filterToggle) {
       setIconOnlyButton(filterToggle, 'chevron', state.filtersCollapsed ? 'Show filters and view options' : 'Hide filters and view options');
@@ -757,12 +772,14 @@
     });
     refreshRefineTrigger();
     const themeSelect = app.querySelector('[data-setting-theme]');
+    const accentSelect = app.querySelector('[data-setting-accent]');
     const densitySelect = app.querySelector('[data-setting-density]');
     const filterCheck = app.querySelector('[data-setting-filters-collapsed]');
     const layoutSelect = app.querySelector('[data-setting-layout]');
     const sizeSliders = app.querySelectorAll('[data-card-scale]');
     const sizeLabels = app.querySelectorAll('[data-card-scale-value]');
     if (themeSelect) themeSelect.value = state.theme;
+    if (accentSelect) accentSelect.value = state.accent;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     sizeSliders.forEach(slider => {
       slider.value = String(cardScale);
@@ -1503,7 +1520,12 @@
       sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
       groupBy: input.groupBy === 'reply' ? 'reply' : DEFAULT_SETTINGS.groupBy,
       perPage: VIEW_PAGE_SIZES.includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
-      theme: THEME_MODES.includes(input.theme) ? input.theme : DEFAULT_SETTINGS.theme,
+      theme: THEME_MODES.includes(input.theme)
+        ? input.theme
+        : (LEGACY_THEME_ACCENTS[input.theme] ? 'dark' : DEFAULT_SETTINGS.theme),
+      accent: ACCENT_MODES.includes(input.accent)
+        ? input.accent
+        : (LEGACY_THEME_ACCENTS[input.theme] || DEFAULT_SETTINGS.accent),
       filtersCollapsed: Boolean(input.filtersCollapsed),
       layoutMode: LAYOUT_MODES.includes(input.layoutMode) ? input.layoutMode : DEFAULT_SETTINGS.layoutMode,
       cardScale: Number.isFinite(Number(input.cardScale)) ? Math.min(160, Math.max(70, Math.round(Number(input.cardScale) / 5) * 5)) : DEFAULT_SETTINGS.cardScale,
@@ -1525,6 +1547,7 @@
       groupBy: state.groupBy,
       perPage: state.perPage,
       theme: state.theme,
+      accent: state.accent,
       filtersCollapsed: state.filtersCollapsed,
       layoutMode: state.layoutMode,
       cardScale: state.cardScale,
@@ -1601,6 +1624,7 @@
     const migration = panel.querySelector('[data-diag-migration]');
     if (migration) migration.textContent = state.diagnostics.migratedLegacyStorage ? 'Previous settings migrated successfully' : 'No legacy migration was required';
     const themeSelect = panel.querySelector('[data-setting-theme]');
+    const accentSelect = panel.querySelector('[data-setting-accent]');
     const densitySelect = panel.querySelector('[data-setting-density]');
     const filtersCollapsed = panel.querySelector('[data-setting-filters-collapsed]');
     const layoutSelect = panel.querySelector('[data-setting-layout]');
@@ -1613,6 +1637,7 @@
     const dedupeContent = panel.querySelector('[data-setting-dedupe-content]');
     const warnLargeScan = panel.querySelector('[data-setting-warn-large-scan]');
     if (themeSelect) themeSelect.value = state.theme;
+    if (accentSelect) accentSelect.value = state.accent;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     if (filtersCollapsed) filtersCollapsed.checked = state.filtersCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
@@ -3451,10 +3476,11 @@
       --scg-text:#eef1f5;
       --scg-text-soft:#c6ccd4;
       --scg-muted:#98a1ad;
-      --scg-accent:#4fb3ff;
+      --scg-accent-base:#4fb3ff;
       --scg-accent-ink:#04121e;
-      --scg-accent-soft:#0d2233;
-      --scg-accent-line:#1e5279;
+      --scg-accent:var(--scg-accent-base);
+      --scg-accent-soft:color-mix(in srgb,var(--scg-accent-base) 15%,var(--scg-surface-3));
+      --scg-accent-line:color-mix(in srgb,var(--scg-accent-base) 42%,var(--scg-surface));
       --scg-success:#4ad4a0;
       --scg-success-soft:#0d2a22;
       --scg-warn:#e0b062;
@@ -3463,7 +3489,7 @@
       --scg-danger-soft:#321316;
       --scg-shadow:0 18px 48px #00000094;
       --scg-shadow-sm:0 6px 18px #0000006b;
-      --scg-focus:#7cc8ff;
+      --scg-focus:color-mix(in srgb,var(--scg-accent-base) 62%,var(--scg-text));
       --scg-hi:#ffffff;
       --scg-lo:#000000;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e97a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
@@ -3514,10 +3540,8 @@
       --scg-text:#0f1319;
       --scg-text-soft:#333c48;
       --scg-muted:#4f5a68;
-      --scg-accent:#0a5fc4;
+      --scg-accent-base:#0a5fc4;
       --scg-accent-ink:#ffffff;
-      --scg-accent-soft:#e0ecfc;
-      --scg-accent-line:#a6c8ef;
       --scg-success:#0d6b4b;
       --scg-success-soft:#dff2e9;
       --scg-warn:#8a5a08;
@@ -3526,74 +3550,26 @@
       --scg-danger-soft:#fce1e7;
       --scg-shadow:0 16px 40px #2c3c5226;
       --scg-shadow-sm:0 5px 14px #2c3c5220;
-      --scg-focus:#0a5fc4;
       --scg-hi:#ffffff;
       --scg-lo:#2c3c52;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f5a68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       color-scheme:light;
     }
 
-    #${APP_ID}[data-theme="midnight"],
-    #scg-tl-launch[data-theme="midnight"],
-    #scg-tl-toast[data-theme="midnight"]{
-      --scg-bg:#060912;
-      --scg-canvas:#080d1a;
-      --scg-surface:#0e1426;
-      --scg-surface-2:#131b31;
-      --scg-surface-3:#1a2440;
-      --scg-well:#03060d;
-      --scg-line:#232f52;
-      --scg-line-strong:#31406b;
-      --scg-text:#e9eefb;
-      --scg-text-soft:#bcc7e4;
-      --scg-muted:#93a0c2;
-      --scg-accent:#8f9dff;
-      --scg-accent-ink:#080b1c;
-      --scg-accent-soft:#181f4a;
-      --scg-accent-line:#39448c;
-      --scg-success:#54d9b4;
-      --scg-success-soft:#0c2c2c;
-      --scg-warn:#dfb066;
-      --scg-warn-soft:#2a2317;
-      --scg-danger:#ff86a6;
-      --scg-danger-soft:#2e1424;
-      --scg-focus:#a8b3ff;
-      --scg-hi:#dfe6ff;
-      --scg-lo:#000000;
-      --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393a0c2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
-      color-scheme:dark;
-    }
+    /* Accent presets. Only the base hue and its ink are stated; everything
+       else derives from them, so a new accent is two lines. */
+    #${APP_ID}[data-accent="indigo"],#scg-tl-launch[data-accent="indigo"],#scg-tl-toast[data-accent="indigo"]{--scg-accent-base:#8f9dff;--scg-accent-ink:#080b1c}
+    #${APP_ID}[data-accent="amber"],#scg-tl-launch[data-accent="amber"],#scg-tl-toast[data-accent="amber"]{--scg-accent-base:#d8b158;--scg-accent-ink:#1a1405}
+    #${APP_ID}[data-accent="green"],#scg-tl-launch[data-accent="green"],#scg-tl-toast[data-accent="green"]{--scg-accent-base:#4ad4a0;--scg-accent-ink:#04140e}
+    #${APP_ID}[data-accent="rose"],#scg-tl-launch[data-accent="rose"],#scg-tl-toast[data-accent="rose"]{--scg-accent-base:#ff86a6;--scg-accent-ink:#2e0f18}
+    #${APP_ID}[data-accent="neutral"],#scg-tl-launch[data-accent="neutral"],#scg-tl-toast[data-accent="neutral"]{--scg-accent-base:#9aa6b4;--scg-accent-ink:#0f1319}
 
-    #${APP_ID}[data-theme="graphite"],
-    #scg-tl-launch[data-theme="graphite"],
-    #scg-tl-toast[data-theme="graphite"]{
-      --scg-bg:#101011;
-      --scg-canvas:#131314;
-      --scg-surface:#1a1a1c;
-      --scg-surface-2:#202022;
-      --scg-surface-3:#292a2d;
-      --scg-well:#0a0a0b;
-      --scg-line:#34353a;
-      --scg-line-strong:#45464c;
-      --scg-text:#f1f1f2;
-      --scg-text-soft:#cbcbcf;
-      --scg-muted:#a1a2a8;
-      --scg-accent:#d8b158;
-      --scg-accent-ink:#1a1405;
-      --scg-accent-soft:#2c2413;
-      --scg-accent-line:#5c4c22;
-      --scg-success:#63c99a;
-      --scg-success-soft:#16261e;
-      --scg-warn:#d8b158;
-      --scg-warn-soft:#2c2413;
-      --scg-danger:#f08a9e;
-      --scg-danger-soft:#2b1519;
-      --scg-focus:#e3c479;
-      --scg-hi:#ffffff;
-      --scg-lo:#000000;
-      --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a2a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
-      color-scheme:dark;
-    }
+    #${APP_ID}[data-theme="light"][data-accent="blue"],#scg-tl-launch[data-theme="light"][data-accent="blue"]{--scg-accent-base:#0a5fc4;--scg-accent-ink:#ffffff}
+    #${APP_ID}[data-theme="light"][data-accent="indigo"],#scg-tl-launch[data-theme="light"][data-accent="indigo"]{--scg-accent-base:#4048b8;--scg-accent-ink:#ffffff}
+    #${APP_ID}[data-theme="light"][data-accent="amber"],#scg-tl-launch[data-theme="light"][data-accent="amber"]{--scg-accent-base:#8a5a08;--scg-accent-ink:#ffffff}
+    #${APP_ID}[data-theme="light"][data-accent="green"],#scg-tl-launch[data-theme="light"][data-accent="green"]{--scg-accent-base:#0d6b4b;--scg-accent-ink:#ffffff}
+    #${APP_ID}[data-theme="light"][data-accent="rose"],#scg-tl-launch[data-theme="light"][data-accent="rose"]{--scg-accent-base:#af1f3d;--scg-accent-ink:#ffffff}
+    #${APP_ID}[data-theme="light"][data-accent="neutral"],#scg-tl-launch[data-theme="light"][data-accent="neutral"]{--scg-accent-base:#4f5a68;--scg-accent-ink:#ffffff}
 
     /* ---- 2. Primitives ---------------------------------------- */
     #${APP_ID},#${APP_ID} *,#${APP_ID} *:before,#${APP_ID} *:after,
@@ -5421,7 +5397,7 @@
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (default dark)</option><option value="light">Daylight (light)</option><option value="midnight">Indigo (dark)</option><option value="graphite">Graphite (dark)</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -5556,6 +5532,9 @@
     controllers.settings.open();
   };
   app.querySelector('[data-action="close-settings"]').onclick = controllers.settings.close;
+  app.querySelector('[data-setting-accent]').onchange = event => {
+    commitState({ accent: ACCENT_MODES.includes(event.target.value) ? event.target.value : DEFAULT_SETTINGS.accent }, { persist: true, shellOnly: true });
+  };
   app.querySelector('[data-setting-theme]').onchange = event => {
     commitState({ theme: THEME_MODES.includes(event.target.value) ? event.target.value : DEFAULT_SETTINGS.theme }, { persist: true, shellOnly: true });
   };

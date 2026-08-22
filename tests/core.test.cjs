@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const root = path.resolve(__dirname, '..');
 const userscriptPath = path.join(root, 'SimpCity-Thread-Gallery-Timeline.user.js');
 const source = fs.readFileSync(userscriptPath, 'utf8');
+const ACCENTS = ['blue', 'indigo', 'amber', 'green', 'rose', 'neutral'];
 
 function metadataValue(key) {
   return source.match(new RegExp(`^// @${key}\\s+(.+)$`, 'm'))?.[1].trim() || '';
@@ -101,7 +102,7 @@ test('source retains provenance, memory, download, and ZIP safeguards', () => {
 test('gallery UI and media-size controls remain available', () => {
   assert.match(source, /data-ui', 'gallery'/);
   assert.match(source, /Object\.freeze\(\['masonry', 'grid', 'feed'\]\)/);
-  assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light', 'midnight', 'graphite'\]\)/);
+  assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light'\]\)/);
   assert.match(source, /min="70" max="160" step="5"/);
 });
 
@@ -713,4 +714,60 @@ test('ratio capture is wired into scanning, rendering and the viewer', () => {
   assert.match(source, /aspect-ratio:var\(--scg-ratio,0\.72\)/);
   // a better source must not be overwritten by a worse one
   assert.match(source, /RATIO_SOURCE_RANK\[current\.source\] > RATIO_SOURCE_RANK\[source\]/);
+});
+
+test('themes collapse to two complete sets plus a derived accent', () => {
+  assert.match(source, /const ACCENT_MODES = Object\.freeze\(\['blue', 'indigo', 'amber', 'green', 'rose', 'neutral'\]\)/);
+  // The two hue-only themes are gone from both the model and the stylesheet.
+  assert.doesNotMatch(source, /data-theme="midnight"|data-theme="graphite"/);
+  // Scope this to the declaration itself: a lazy match over the whole source
+  // also hits the word in the comment explaining the migration.
+  assert.doesNotMatch(source.match(/const THEME_LABELS = .*/)[0], /Graphite|Indigo/);
+
+  // Accent is one base hue plus its ink; everything else derives, so adding an
+  // accent stays a two-line change.
+  assert.match(source, /--scg-accent:var\(--scg-accent-base\)/);
+  assert.match(source, /--scg-accent-soft:color-mix\(in srgb,var\(--scg-accent-base\) 15%,var\(--scg-surface-3\)\)/);
+  assert.match(source, /--scg-focus:color-mix\(in srgb,var\(--scg-accent-base\) 62%,var\(--scg-text\)\)/);
+  ACCENTS.forEach(accent => {
+    assert.match(source, new RegExp(`\[data-accent="${accent}"\]`));
+  });
+
+  // Accent must be persisted and reflected onto the shell, launcher and toast.
+  assert.match(source, /accent: state\.accent,/);
+  assert.match(source, /app\.dataset\.accent = state\.accent;/);
+  assert.match(source, /toast\.dataset\.accent = state\.accent/);
+  assert.match(source, /launch\.dataset\.accent = state\.accent/);
+});
+
+test('stored midnight and graphite settings migrate to dark plus an accent', () => {
+  const { normalizedPreferences } = evaluateSlice(
+    'function normalizedPreferences',
+    'function currentPreferences',
+    ['normalizedPreferences'],
+    {
+      THEME_MODES: ['dark', 'light'],
+      ACCENT_MODES: ACCENTS,
+      LAYOUT_MODES: ['masonry', 'grid', 'feed'],
+      LEGACY_THEME_ACCENTS: { midnight: 'indigo', graphite: 'amber' },
+      VIEW_PAGE_SIZES: [40, 60, 100, 200, 300, 500],
+      DEFAULT_SETTINGS: { filter: 'all', sort: 'thread-asc', groupBy: 'none', perPage: 60, theme: 'dark', accent: 'blue', layoutMode: 'masonry', cardScale: 100, downloadConcurrency: 2, zipPartSizeMb: 300, zipPartMaxFiles: 24, archiveLayout: 'page-author' },
+    },
+  );
+
+  const midnight = normalizedPreferences({ theme: 'midnight' });
+  assert.equal(midnight.theme, 'dark');
+  assert.equal(midnight.accent, 'indigo');
+
+  const graphite = normalizedPreferences({ theme: 'graphite' });
+  assert.equal(graphite.theme, 'dark');
+  assert.equal(graphite.accent, 'amber');
+
+  // An explicit accent always wins over the legacy mapping.
+  assert.equal(normalizedPreferences({ theme: 'graphite', accent: 'rose' }).accent, 'rose');
+  // Unknown values fall back rather than passing through.
+  assert.equal(normalizedPreferences({ theme: 'nonsense', accent: 'nonsense' }).theme, 'dark');
+  assert.equal(normalizedPreferences({ theme: 'nonsense', accent: 'nonsense' }).accent, 'blue');
+  // A real theme is untouched.
+  assert.equal(normalizedPreferences({ theme: 'light' }).theme, 'light');
 });
