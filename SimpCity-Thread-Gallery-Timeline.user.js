@@ -3693,6 +3693,7 @@
       --scg-focus:color-mix(in srgb,var(--scg-accent-base) 62%,var(--scg-text));
       --scg-hi:#ffffff;
       --scg-lo:#000000;
+      --scg-tint:9%;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e97a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       --scg-r-xs:5px;
       --scg-r-sm:8px;
@@ -3753,6 +3754,7 @@
       --scg-shadow-sm:0 5px 14px #2c3c5220;
       --scg-hi:#ffffff;
       --scg-lo:#2c3c52;
+      --scg-tint:7%;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f5a68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       color-scheme:light;
     }
@@ -3912,7 +3914,12 @@
     #${APP_ID}{
       position:fixed;inset:0;z-index:2147483646;
       display:none;overflow:hidden;
-      background:var(--scg-bg);color:var(--scg-text);
+      background:
+        radial-gradient(150% 120% at 0% 0%,
+          color-mix(in srgb,var(--scg-accent-base) var(--scg-tint,9%),transparent),
+          transparent 58%),
+        var(--scg-bg);
+      color:var(--scg-text);
       font:400 13px/1.45 ui-sans-serif,system-ui,sans-serif;
     }
     #${APP_ID}.open{display:grid;grid-template-rows:auto minmax(0,1fr)}
@@ -4280,8 +4287,12 @@
       padding:16px 16px 110px;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-lg) var(--scg-r-lg) 0 0;
       border-bottom:0;
-      background:var(--scg-canvas);
-      box-shadow:inset 0 1px 0 color-mix(in srgb,#ffffff 4%,transparent);
+      background:
+        radial-gradient(130% 100% at 0% 0%,
+          color-mix(in srgb,var(--scg-accent-base) var(--scg-tint,9%),transparent),
+          transparent 55%),
+        var(--scg-canvas);
+      box-shadow:inset 0 1px 0 color-mix(in srgb,var(--scg-hi) 4%,transparent);
       scroll-behavior:smooth;
     }
     #${APP_ID} .scg-top{

@@ -979,3 +979,17 @@ test('DOM-only UI state is lifted so unmounting cannot lose it', () => {
   // Replacing the dataset clears it, since the keys no longer refer to anything.
   assert.match(source, /state\.expandedKeys\.clear\(\);\s*\r?\n\s*state\.activePlayers\.clear\(\);/);
 });
+
+test('the accent tints the background from one corner, at a tunable strength', () => {
+  // Strength is a token, so it can be tuned per theme and zeroed in one place
+  // if a "reduce transparency" setting is added later.
+  assert.match(source, /--scg-tint:9%/);
+  assert.match(source, /--scg-tint:7%/);
+
+  // Shell and canvas share the same origin corner so it reads as one wash.
+  const washes = source.match(/radial-gradient\([^)]*at 0% 0%,\s*\r?\n?\s*color-mix\(in srgb,var\(--scg-accent-base\) var\(--scg-tint/g) || [];
+  assert.equal(washes.length, 2);
+
+  // Derived from the accent base, so switching accent moves the tint with it.
+  assert.doesNotMatch(source.slice(source.indexOf('.scg-scroll{'), source.indexOf('.scg-top{')), /#[0-9a-f]{6}/i);
+});
