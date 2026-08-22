@@ -1550,14 +1550,14 @@
   }
 
   function resetPreferences(clearHistory = false) {
-    storage.remove(SETTINGS_KEY);
-    if (clearHistory) {
-      storage.remove(DOWNLOAD_HISTORY_KEY);
-      state.downloadHistory = {};
-      updateDownloadedIndicators();
+    if (clearHistory && !clearDownloadHistory()) {
+      notify('Finish or cancel the active download before resetting history.', 5000);
+      return false;
     }
+    storage.remove(SETTINGS_KEY);
     applyPreferences(DEFAULT_SETTINGS, true);
     notify(clearHistory ? 'Preferences and download history reset.' : 'Preferences reset.');
+    return true;
   }
 
   function clearDownloadHistory() {
@@ -2326,16 +2326,8 @@
       state.authorFilter, state.hostFilter, state.selectedOnly, state.perPage, state.viewPage,
     ]);
     if (visibleItemsCache.signature === signature) return visibleItemsCache.items;
-    const q = state.query.trim().toLowerCase();
-    const filtered = state.items.filter(item => {
-      const typeMatch = state.filter === 'all' || item.type === state.filter ||
-        (state.filter === 'video' && item.type === 'embed');
-      const host = itemSourceHost(item);
-      const authorMatch = state.authorFilter === 'all' || item.author === state.authorFilter;
-      const hostMatch = state.hostFilter === 'all' || host === state.hostFilter;
-      const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
-      return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
-    });
+    const q = normalizedQuery();
+    const filtered = state.items.filter(item => matchesActiveFilters(item, q));
 
     const thread = (a, b) => compareThreadOrder(a, b);
     const alpha = (left, right) => String(left || '').localeCompare(String(right || ''), undefined, { sensitivity: 'base' });
@@ -2368,14 +2360,22 @@
     return changed;
   }
 
-  function matchesActiveSelectionType(item) {
-    if (state.filter === 'image') return item.type === 'image';
-    if (state.filter === 'video') return item.type === 'video' || item.type === 'embed';
-    return !state.filter || state.filter === 'all';
+  function normalizedQuery() {
+    return String(state.query || '').trim().toLowerCase();
+  }
+
+  function matchesActiveFilters(item, q = normalizedQuery()) {
+    const typeMatch = !state.filter || state.filter === 'all' || item.type === state.filter ||
+      (state.filter === 'video' && item.type === 'embed');
+    const authorMatch = !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter;
+    const hostMatch = !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter;
+    const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
+    return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
   }
 
   function replyDownloadableItems(key) {
-    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveSelectionType(item));
+    const q = normalizedQuery();
+    return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveFilters(item, q));
   }
 
   function replySelectionState(key) {
