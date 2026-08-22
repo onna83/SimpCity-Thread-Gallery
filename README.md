@@ -25,13 +25,15 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 3. Copy its contents into a new Tampermonkey script and save it.
 4. Visit a SimpCity thread and use **Open Gallery** at the bottom-left.
 
-Do not install renamed copies side by side. The canonical filename is [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js), and its existing `@name` and `@namespace` are kept for update compatibility.
+Do not install renamed copies side by side. The canonical filename is [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js).
+
+The `@namespace` (`local.simpcity.gallery.hybrid`) is fixed and must never change, because Tampermonkey uses it together with `@name` to recognise an installed script. In 0.9.7 the `@name` was deliberately shortened from `SimpCity Thread Gallery — Hybrid UI Fork` to `SimpCity Thread Gallery`. Anyone who installed 0.9.6 or earlier may therefore see the update offered as a separate script: remove the old entry after installing 0.9.7 so only one copy stays active.
 
 ## Install from GreasyFork
 
 Because the script targets an adult-content forum, the GreasyFork network serves its listing through SleazyFork:
 
-[Install the stable SimpCity Thread Gallery release](https://sleazyfork.org/en/scripts/591943-simpcity-thread-gallery-hybrid-ui-fork)
+[Install the stable SimpCity Thread Gallery release](https://sleazyfork.org/en/scripts/591943)
 
 Choose **Install this script** and approve it in Tampermonkey. The public listing tracks the published stable release; release-candidate work stays on a feature branch until it is reviewed and approved.
 

@@ -2,6 +2,14 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## Unreleased
+
+Fixes made on `main` after the 0.9.7 promotion. Bump `@version` when these are released.
+
+- Fixed reply-level selection ignoring the active search, author, and host filters: selecting a reply now covers exactly the items those filters leave on screen, so the "downloadable selected" counter matches the visible cards. Media-type (All/Images/Videos) behaviour is unchanged.
+- Gave "Reset everything" the same active-download guard as "Clear history": it now refuses while a download is running instead of wiping history mid-transfer, and it clears queue rows and progress through the same path rather than leaving stale entries behind.
+- Consolidated the view-filter rule into a single shared predicate used by both the gallery view and reply selection, so the two can no longer drift apart.
+
 ## 0.9.7
 
 Completed on `feature/v0.9.7` and promoted to `main`.
@@ -21,6 +29,9 @@ Completed on `feature/v0.9.7` and promoted to `main`.
 - Repaired corrupted separators, dimensions, ellipses, and keyboard-help glyphs, and strengthened the full-thread action's red danger treatment.
 - Fixed long scan-warning tooltip wrapping and made the download-queue Close action dismiss reliably while returning focus to its trigger.
 - Made Clear history remove persisted SAVED/LEGACY markers and completed queue rows, while guarding against active-download races.
+- Restricted every selection path to resolvable media, so Select All and reply selection skip items whose media failed to resolve rather than queueing downloads that cannot succeed.
+- Capped the download queue display at the most recent 40 jobs to keep the popover responsive during large batches; older completed rows drop off the list.
+- Shortened the userscript `@name` from `SimpCity Thread Gallery — Hybrid UI Fork` to `SimpCity Thread Gallery`. `@namespace` is unchanged, but Tampermonkey may offer 0.9.7 as a separate script to anyone running 0.9.6 or earlier; remove the old entry after updating.
 - Added automated regression coverage for the new performance, scan-warning, collapse, selection, and dock behavior.
 
 ## 0.9.6 - Gallery Preview

@@ -233,7 +233,7 @@ test('reply-level selection derives checked and indeterminate state from the dat
     selected: new Set(),
   };
   const { replySelectionState, setReplySelected } = evaluateSlice(
-    'function matchesActiveSelectionType',
+    'function normalizedQuery',
     'function buildViewPages',
     ['replySelectionState', 'setReplySelected'],
     {
@@ -275,7 +275,7 @@ test('reply-level selection respects the active media type view', () => {
     selected: new Set(),
   };
   const { setReplySelected, replySelectionState } = evaluateSlice(
-    'function matchesActiveSelectionType',
+    'function normalizedQuery',
     'function buildViewPages',
     ['setReplySelected', 'replySelectionState'],
     {
@@ -314,7 +314,7 @@ test('reply selection works while collapsed and spans all indexed reply items', 
     collapsedReplies: new Set(['large-reply']),
   };
   const { setReplySelected, replySelectionState } = evaluateSlice(
-    'function matchesActiveSelectionType',
+    'function normalizedQuery',
     'function buildViewPages',
     ['setReplySelected', 'replySelectionState'],
     {
@@ -482,4 +482,90 @@ test('long tooltips wrap above adjacent controls and the download queue Close ac
   assert.match(source, /\.scg-header\{\s*z-index:2; \/\* Keep header tooltips above the later-painted filter row\. \*\//);
   assert.doesNotMatch(source, /\.scg-progress:focus-within \.scg-download-popover/);
   assert.match(source, /\[data-action="download-details"\]\'\)\?\.focus\(\{ preventScroll: true \}\)/);
+});
+
+test('reply-level selection respects the active search, author and host filters', () => {
+  const state = {
+    filter: 'all',
+    query: 'holiday',
+    authorFilter: 'ana',
+    hostFilter: 'all',
+    selectedOnly: false,
+    items: [
+      { reply: 'one', selectionKey: 'match', type: 'image', author: 'ana', host: 'bunkr', searchText: 'holiday beach', downloadable: true },
+      { reply: 'one', selectionKey: 'other-author', type: 'image', author: 'bea', host: 'bunkr', searchText: 'holiday beach', downloadable: true },
+      { reply: 'one', selectionKey: 'off-query', type: 'image', author: 'ana', host: 'pixhost', searchText: 'winter cabin', downloadable: true },
+    ],
+    selected: new Set(),
+  };
+  const { setReplySelected, replySelectionState } = evaluateSlice(
+    'function normalizedQuery',
+    'function buildViewPages',
+    ['setReplySelected', 'replySelectionState'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      itemSourceHost: item => item.host,
+      invalidateVisibleItems: () => {},
+    },
+  );
+
+  assert.equal(replySelectionState('one').total, 1);
+  setReplySelected('one', true);
+  assert.deepEqual([...state.selected], ['match']);
+
+  state.selected.clear();
+  state.query = '';
+  state.authorFilter = 'all';
+  state.hostFilter = 'pixhost';
+  assert.equal(replySelectionState('one').total, 1);
+  setReplySelected('one', true);
+  assert.deepEqual([...state.selected], ['off-query']);
+
+  state.selected.clear();
+  state.hostFilter = 'all';
+  setReplySelected('one', true);
+  assert.equal(state.selected.size, 3);
+});
+
+test('reset everything refuses to clear history while a download is active', () => {
+  const removed = [];
+  const notices = [];
+  let historyCleared = 0;
+  let applied = 0;
+  let allowClear = false;
+  const { resetPreferences } = evaluateSlice(
+    'function resetPreferences',
+    'function clearDownloadHistory',
+    ['resetPreferences'],
+    {
+      SETTINGS_KEY: 'settings-key',
+      DEFAULT_SETTINGS: {},
+      storage: { remove: key => removed.push(key) },
+      applyPreferences: () => { applied++; },
+      notify: message => notices.push(message),
+      clearDownloadHistory: () => {
+        if (!allowClear) return false;
+        historyCleared++;
+        return true;
+      },
+    },
+  );
+
+  assert.equal(resetPreferences(true), false);
+  assert.equal(historyCleared, 0);
+  assert.deepEqual(removed, []);
+  assert.equal(applied, 0);
+  assert.match(notices[0], /active download/);
+
+  allowClear = true;
+  assert.equal(resetPreferences(true), true);
+  assert.equal(historyCleared, 1);
+  assert.deepEqual(removed, ['settings-key']);
+  assert.equal(applied, 1);
+
+  assert.equal(resetPreferences(false), true);
+  assert.equal(historyCleared, 1);
+  assert.deepEqual(removed, ['settings-key', 'settings-key']);
 });
