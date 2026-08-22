@@ -28,8 +28,8 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.hybrid');
-  assert.equal(metadataValue('version'), '0.9.7');
-  assert.match(source, /const APP_VERSION = '0\.9\.7'/);
+  assert.equal(metadataValue('version'), '0.9.7.1');
+  assert.match(source, /const APP_VERSION = '0\.9\.7\.1'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');

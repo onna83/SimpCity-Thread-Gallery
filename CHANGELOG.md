@@ -2,9 +2,9 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
-## Unreleased
+## 0.9.7.1
 
-Fixes made on `main` after the 0.9.7 promotion. Bump `@version` when these are released.
+Patch release on `main` following the 0.9.7 promotion.
 
 - Fixed reply-level selection ignoring the active search, author, and host filters: selecting a reply now covers exactly the items those filters leave on screen, so the "downloadable selected" counter matches the visible cards. Media-type (All/Images/Videos) behaviour is unchanged.
 - Gave "Reset everything" the same active-download guard as "Clear history": it now refuses while a download is running instead of wiping history mid-transfer, and it clears queue rows and progress through the same path rather than leaving stale entries behind.
