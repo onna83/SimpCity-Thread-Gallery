@@ -142,6 +142,7 @@
     viewPage: 1,
     viewPages: 1,
     renderedItems: [],
+    replyIndex: null,
     threadPageCount: 1,
     sourcePage: 1,
     selectionMode: false,
@@ -183,12 +184,13 @@
 
   let datasetRevision = 0;
   let selectionRevision = 0;
-  let visibleItemsCache = { signature: '', items: [] };
+  let visibleItemsCache = null;
+  let facetCache = null;
 
   function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
     if (dataset) datasetRevision++;
     if (selection) selectionRevision++;
-    visibleItemsCache = { signature: '', items: [] };
+    if (dataset || (selection && state.selectedOnly)) state.replyIndex = null;
   }
 
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
@@ -2321,11 +2323,17 @@
   }
 
   function visibleItems() {
-    const signature = JSON.stringify([
-      datasetRevision, selectionRevision, state.filter, state.query, state.sort, state.groupBy,
-      state.authorFilter, state.hostFilter, state.selectedOnly, state.perPage, state.viewPage,
-    ]);
-    if (visibleItemsCache.signature === signature) return visibleItemsCache.items;
+    const cache = visibleItemsCache;
+    if (cache
+      && cache.dataset === datasetRevision
+      && cache.selection === selectionRevision
+      && cache.filter === state.filter
+      && cache.query === state.query
+      && cache.sort === state.sort
+      && cache.groupBy === state.groupBy
+      && cache.authorFilter === state.authorFilter
+      && cache.hostFilter === state.hostFilter
+      && cache.selectedOnly === state.selectedOnly) return cache.items;
     const q = normalizedQuery();
     const filtered = state.items.filter(item => matchesActiveFilters(item, q));
 
@@ -2336,7 +2344,18 @@
     else if (state.sort === 'host') filtered.sort((a, b) => alpha(itemSourceHost(a), itemSourceHost(b)) || thread(a, b));
     else if (state.sort === 'type') filtered.sort((a, b) => (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) || thread(a, b));
     else filtered.sort(thread);
-    visibleItemsCache = { signature, items: filtered };
+    visibleItemsCache = {
+      dataset: datasetRevision,
+      selection: selectionRevision,
+      filter: state.filter,
+      query: state.query,
+      sort: state.sort,
+      groupBy: state.groupBy,
+      authorFilter: state.authorFilter,
+      hostFilter: state.hostFilter,
+      selectedOnly: state.selectedOnly,
+      items: filtered,
+    };
     return filtered;
   }
 
@@ -2374,6 +2393,8 @@
   }
 
   function replyDownloadableItems(key) {
+    const index = state.replyIndex;
+    if (index) return index.get(key) || [];
     const q = normalizedQuery();
     return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveFilters(item, q));
   }
@@ -2537,13 +2558,34 @@
     return select.value;
   }
 
-  function refreshFilterControls() {
-    const app = document.getElementById(APP_ID);
-    if (!app) return;
+  function buildReplyIndex(items) {
+    const index = new Map();
+    items.forEach(item => {
+      if (!isDownloadableMedia(item)) return;
+      const key = replyKey(item);
+      const bucket = index.get(key);
+      if (bucket) bucket.push(item);
+      else index.set(key, [item]);
+    });
+    return index;
+  }
+
+  // Author and host lists only change when the dataset does, so memoize them
+  // on datasetRevision instead of re-deriving on every render.
+  function facetOptions() {
+    if (facetCache && facetCache.revision === datasetRevision) return facetCache;
     const authors = [...new Set(state.items.map(item => item.author).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     const hosts = [...new Set(state.items.map(itemSourceHost).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    facetCache = { revision: datasetRevision, authors, hosts };
+    return facetCache;
+  }
+
+  function refreshFilterControls() {
+    const app = document.getElementById(APP_ID);
+    if (!app) return;
+    const { authors, hosts } = facetOptions();
     state.authorFilter = setSelectOptions(app.querySelector('[data-author-filter]'), [
       { value: 'all', label: `All authors (${authors.length})` },
       ...authors.map(author => ({ value: author, label: author })),
@@ -2638,6 +2680,7 @@
     });
     refreshFilterControls();
     const matched = state.scanning ? [] : visibleItems();
+    state.replyIndex = !state.scanning && state.groupBy === 'reply' ? buildReplyIndex(matched) : null;
     const pages = buildViewPages(matched);
     state.viewPages = pages.length;
     state.viewPage = Math.min(Math.max(1, state.viewPage), state.viewPages);
@@ -3185,6 +3228,7 @@
           if (state.cancelScan || controller.signal.aborted) break;
           updateThreadPageInfo(doc, pageUrl);
           appendUniqueItems(state.items, extractFromDocument(doc, pageUrl), seenItems);
+          invalidateVisibleItems({ dataset: true });
           state.scannedPages++;
         } catch (error) {
           if (error?.name === 'AbortError' || state.cancelScan) break;

@@ -25,11 +25,11 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 ## Install with Tampermonkey
 
 1. Install Tampermonkey in your browser.
-2. Open `SimpCity-Thread-Gallery.user.js` from a trusted checkout or a future GitHub Release.
+2. Open `SimpCity-Thread-Gallery-Timeline.user.js` from a trusted checkout or a future GitHub Release.
 3. Copy its contents into a new Tampermonkey script and save it.
 4. Visit a SimpCity thread and use **Open Gallery** at the bottom-left.
 
-The canonical filename is [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js) on this branch too — the fork replaces the file rather than sitting beside it, so only one version is checked out at a time.
+The fork's filename is [SimpCity-Thread-Gallery-Timeline.user.js](SimpCity-Thread-Gallery-Timeline.user.js), distinct from the stable script's `SimpCity-Thread-Gallery.user.js` on `main`.
 
 This fork uses a **separate script identity** throughout, which is what lets both versions be installed in Tampermonkey at once:
 
@@ -48,7 +48,7 @@ Because the script targets an adult-content forum, the GreasyFork network serves
 
 [Install the stable SimpCity Thread Gallery release](https://sleazyfork.org/en/scripts/591943)
 
-That listing serves the **stable** script from `main`. The timeline fork is not published — install it by pasting this branch's [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js) into Tampermonkey directly.
+That listing serves the **stable** script from `main`. The timeline fork is not published — install it by pasting this branch's [SimpCity-Thread-Gallery-Timeline.user.js](SimpCity-Thread-Gallery-Timeline.user.js) into Tampermonkey directly.
 
 ## Media support
 
@@ -86,7 +86,7 @@ Use the GitHub bug or feature template once the public repository is connected. 
 The project has no bundler, framework, runtime dependency, external font, or runtime image asset. Run checks with:
 
 ```powershell
-node --check SimpCity-Thread-Gallery.user.js
+node --check SimpCity-Thread-Gallery-Timeline.user.js
 node --test tests/core.test.cjs
 ```
 

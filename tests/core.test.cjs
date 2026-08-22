@@ -7,7 +7,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
-const userscriptPath = path.join(root, 'SimpCity-Thread-Gallery.user.js');
+const userscriptPath = path.join(root, 'SimpCity-Thread-Gallery-Timeline.user.js');
 const source = fs.readFileSync(userscriptPath, 'utf8');
 
 function metadataValue(key) {
@@ -125,9 +125,15 @@ test('download progress stays isolated from full gallery rendering', () => {
 });
 
 test('visible results use an invalidated cache', () => {
-  assert.match(source, /let visibleItemsCache = \{ signature: '', items: \[\] \}/);
-  assert.match(source, /if \(visibleItemsCache\.signature === signature\) return visibleItemsCache\.items/);
+  assert.match(source, /let visibleItemsCache = null/);
+  assert.match(source, /cache\.dataset === datasetRevision/);
+  assert.match(source, /cache\.selection === selectionRevision/);
   assert.match(source, /invalidateVisibleItems\(\{ dataset: true, selection: true \}\)/);
+  // Pagination must not key the cache: visibleItems() returns the unpaginated set.
+  assert.doesNotMatch(source, /cache\.perPage/);
+  assert.doesNotMatch(source, /cache\.viewPage/);
+  // Scanning mutates state.items in place and must invalidate as it goes.
+  assert.match(source, /appendUniqueItems\(state\.items[\s\S]*?invalidateVisibleItems\(\{ dataset: true \}\)/);
 });
 
 test('large-thread warning preference is persisted through existing settings storage', () => {
@@ -568,4 +574,75 @@ test('reset everything refuses to clear history while a download is active', () 
   assert.equal(resetPreferences(false), true);
   assert.equal(historyCleared, 1);
   assert.deepEqual(removed, ['settings-key', 'settings-key']);
+});
+
+test('reply selection reads the prebuilt index instead of rescanning every item', () => {
+  let itemScans = 0;
+  const state = {
+    // Any fallback path has to touch state.items; the getter proves it doesn't.
+    get items() { itemScans++; return []; },
+    selected: new Set(['a']),
+    replyIndex: new Map([['one', [
+      { reply: 'one', selectionKey: 'a', downloadable: true },
+      { reply: 'one', selectionKey: 'b', downloadable: true },
+    ]]]),
+  };
+  const { replySelectionState } = evaluateSlice(
+    'function normalizedQuery',
+    'function buildViewPages',
+    ['replySelectionState'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      invalidateVisibleItems: () => {},
+    },
+  );
+
+  const group = replySelectionState('one');
+  assert.equal(group.total, 2);
+  assert.equal(group.selected, 1);
+  assert.equal(group.indeterminate, true);
+  assert.equal(itemScans, 0);
+  assert.equal(replySelectionState('absent').total, 0);
+});
+
+test('reply selection still works without an index', () => {
+  const state = {
+    replyIndex: null,
+    items: [
+      { reply: 'one', selectionKey: 'a', type: 'image', downloadable: true },
+      { reply: 'two', selectionKey: 'b', type: 'image', downloadable: true },
+    ],
+    selected: new Set(),
+  };
+  const { replySelectionState } = evaluateSlice(
+    'function normalizedQuery',
+    'function buildViewPages',
+    ['replySelectionState'],
+    {
+      state,
+      replyKey: item => item.reply,
+      isDownloadableMedia: item => item.downloadable,
+      invalidateVisibleItems: () => {},
+    },
+  );
+
+  assert.equal(replySelectionState('one').total, 1);
+  assert.equal(replySelectionState('two').total, 1);
+});
+
+test('derived facet lists are memoized on the dataset revision', () => {
+  assert.match(source, /facetCache && facetCache\.revision === datasetRevision/);
+  assert.match(source, /facetCache = \{ revision: datasetRevision, authors, hosts \}/);
+  assert.match(source, /const \{ authors, hosts \} = facetOptions\(\)/);
+  // The old per-render derivation must be gone from refreshFilterControls.
+  const controlsStart = source.indexOf('function refreshFilterControls');
+  const controls = source.slice(controlsStart, source.indexOf('function replyGroupsMarkup', controlsStart));
+  assert.doesNotMatch(controls, /new Set\(state\.items\.map/);
+});
+
+test('the reply index is rebuilt per render and dropped only when eligibility can change', () => {
+  assert.match(source, /state\.replyIndex = !state\.scanning && state\.groupBy === 'reply' \? buildReplyIndex\(matched\) : null/);
+  assert.match(source, /if \(dataset \|\| \(selection && state\.selectedOnly\)\) state\.replyIndex = null/);
 });
