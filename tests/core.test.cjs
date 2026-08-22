@@ -26,10 +26,10 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
 }
 
 test('canonical metadata preserves the installed script identity', () => {
-  assert.equal(metadataValue('name'), 'SimpCity Thread Gallery');
-  assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.hybrid');
-  assert.equal(metadataValue('version'), '0.9.7.1');
-  assert.match(source, /const APP_VERSION = '0\.9\.7\.1'/);
+  assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
+  assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
+  assert.equal(metadataValue('version'), '0.10.0');
+  assert.match(source, /const APP_VERSION = '0\.10\.0'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -40,10 +40,10 @@ test('canonical metadata preserves the installed script identity', () => {
 });
 
 test('storage keys remain compatible with installed versions', () => {
-  assert.match(source, /sc-thread-gallery-settings-v1/);
-  assert.match(source, /sc-thread-gallery-download-history-v1/);
-  assert.match(source, /sc-thread-gallery-storage-migrated-v072/);
-  assert.match(source, /const APP_ID = 'sc-thread-gallery'/);
+  assert.match(source, /sc-thread-gallery-timeline-settings-v1/);
+  assert.match(source, /sc-thread-gallery-timeline-download-history-v1/);
+  assert.match(source, /sc-thread-gallery-timeline-storage-migrated-v1/);
+  assert.match(source, /const APP_ID = 'sc-thread-gallery-tl'/);
 });
 
 test('URL normalization accepts only HTTP and HTTPS', () => {
@@ -443,7 +443,7 @@ test('interface polish retains responsive, native, and launcher safeguards', () 
   assert.match(source, /\.scg-filters button:hover:not\(:disabled\):not\(\.active\)\{background:var\(--scg-surface-3\);color:var\(--scg-text\)\}/);
   assert.match(source, /@media\(max-height:620px\)/);
   assert.match(source, /\.scg-download-jobs\{max-height:30vh\}/);
-  assert.match(source, /#scg-launch\{[\s\S]*?min-height:66px/);
+  assert.match(source, /#scg-tl-launch\{[\s\S]*?min-height:66px/);
   assert.match(source, /\.scg-lightbox \[data-tooltip\]:after\{max-width:170px\}/);
 });
 

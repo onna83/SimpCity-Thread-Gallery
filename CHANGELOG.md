@@ -2,6 +2,13 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.10.0 (timeline fork — unreleased)
+
+Forked from 0.9.7.1. Separate script identity so both can be installed at once:
+new `@name`, `@namespace`, `APP_ID`, all three storage keys, and all eight global element
+ids prefixed `scg-tl-`. Download history starts empty and is never shared with the
+stable script.
+
 ## 0.9.7.1
 
 Patch release on `main` following the 0.9.7 promotion.

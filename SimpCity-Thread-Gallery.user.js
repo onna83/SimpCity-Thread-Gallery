@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         SimpCity Thread Gallery
-// @namespace    local.simpcity.gallery.hybrid
-// @version      0.9.7.1
-// @description  Browse SimpCity thread media in a full-screen gallery with filtering, lightbox viewing and verified downloads.
+// @name         SimpCity Thread Gallery Timeline
+// @namespace    local.simpcity.gallery.timeline
+// @version      0.10.0
+// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -22,11 +22,11 @@
   // v0.9.7 keeps the established architecture while reducing rendering work
   // and adding safer scanning plus reply-level grouping and selection controls.
 
-  const APP_VERSION = '0.9.7.1';
-  const APP_ID = 'sc-thread-gallery';
-  const SETTINGS_KEY = 'sc-thread-gallery-settings-v1';
-  const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-download-history-v1';
-  const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-storage-migrated-v072';
+  const APP_VERSION = '0.10.0';
+  const APP_ID = 'sc-thread-gallery-tl';
+  const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
+  const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
+  const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-timeline-storage-migrated-v1';
   const LARGE_THREAD_WARNING_PAGES = 50;
   const SCAN_WARNING_TEXT = 'Scanning a very large thread can use substantial RAM and may temporarily slow or freeze the browser. Media files remain unloaded until viewed.';
   if (document.getElementById(APP_ID)) return;
@@ -619,9 +619,9 @@
     app.style.setProperty('--scg-grid-compact-height', `${Math.round(312 * scale)}px`);
     app.classList.toggle('compact', state.compact);
     app.classList.toggle('filters-collapsed', state.filtersCollapsed);
-    const toast = document.getElementById('scg-gallery-toast');
+    const toast = document.getElementById('scg-tl-toast');
     if (toast) toast.dataset.theme = state.theme;
-    const launch = document.getElementById('scg-launch');
+    const launch = document.getElementById('scg-tl-launch');
     if (launch) launch.dataset.theme = state.theme;
     const filterToggle = app.querySelector('[data-action="filters-toggle"]');
     if (filterToggle) {
@@ -1200,7 +1200,7 @@
   }
 
   function notify(message, duration = 3500) {
-    const toast = document.getElementById('scg-gallery-toast');
+    const toast = document.getElementById('scg-tl-toast');
     if (!toast) return;
     toast.textContent = message;
     toast.classList.add('show');
@@ -1443,7 +1443,7 @@
       return summary;
     }, {});
     return {
-      app: 'SimpCity Thread Gallery',
+      app: 'SimpCity Thread Gallery Timeline',
       version: APP_VERSION,
       generatedAt: new Date().toISOString(),
       storage: storage.mode,
@@ -1519,7 +1519,7 @@
 
   function exportSettings(includeHistory = false) {
     const payload = {
-      app: 'SimpCity Thread Gallery',
+      app: 'SimpCity Thread Gallery Timeline',
       schema: 2,
       historySchema: 2,
       version: APP_VERSION,
@@ -3267,15 +3267,15 @@
   style.textContent = `
 
     /* ============================================================
-       GALLERY UI  -  design system for SimpCity Thread Gallery 0.9.7
+       GALLERY UI  -  design system for SimpCity Thread Gallery Timeline
        Direction: full-bleed media canvas, floating instrument plate,
        mode-morphing dock. One restrained signal colour per theme.
        ============================================================ */
 
     /* ---- 1. Design tokens ------------------------------------- */
     #${APP_ID},
-    #scg-launch,
-    #scg-gallery-toast{
+    #scg-tl-launch,
+    #scg-tl-toast{
       --scg-bg:#08090b;
       --scg-canvas:#0a0b0e;
       --scg-surface:#101216;
@@ -3309,8 +3309,8 @@
     }
 
     #${APP_ID}[data-theme="light"],
-    #scg-launch[data-theme="light"],
-    #scg-gallery-toast[data-theme="light"]{
+    #scg-tl-launch[data-theme="light"],
+    #scg-tl-toast[data-theme="light"]{
       --scg-bg:#e9ecf0;
       --scg-canvas:#eef1f5;
       --scg-surface:#ffffff;
@@ -3340,8 +3340,8 @@
     }
 
     #${APP_ID}[data-theme="midnight"],
-    #scg-launch[data-theme="midnight"],
-    #scg-gallery-toast[data-theme="midnight"]{
+    #scg-tl-launch[data-theme="midnight"],
+    #scg-tl-toast[data-theme="midnight"]{
       --scg-bg:#060912;
       --scg-canvas:#080d1a;
       --scg-surface:#0e1426;
@@ -3369,8 +3369,8 @@
     }
 
     #${APP_ID}[data-theme="graphite"],
-    #scg-launch[data-theme="graphite"],
-    #scg-gallery-toast[data-theme="graphite"]{
+    #scg-tl-launch[data-theme="graphite"],
+    #scg-tl-toast[data-theme="graphite"]{
       --scg-bg:#101011;
       --scg-canvas:#131314;
       --scg-surface:#1a1a1c;
@@ -3399,7 +3399,7 @@
 
     /* ---- 2. Primitives ---------------------------------------- */
     #${APP_ID},#${APP_ID} *,#${APP_ID} *:before,#${APP_ID} *:after,
-    #scg-launch,#scg-launch *,#scg-gallery-toast,#scg-gallery-toast *{
+    #scg-tl-launch,#scg-tl-launch *,#scg-tl-toast,#scg-tl-toast *{
       box-sizing:border-box;
       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
       letter-spacing:normal;
@@ -3422,7 +3422,7 @@
 
     /* Focus: a two-layer ring so it survives on both light and dark. */
     #${APP_ID} :focus-visible,
-    #scg-launch:focus-visible{
+    #scg-tl-launch:focus-visible{
       outline:2px solid var(--scg-focus);
       outline-offset:2px;
       border-radius:var(--scg-r-sm);
@@ -3481,7 +3481,7 @@
     #${APP_ID} ::-webkit-scrollbar-track{background:transparent}
 
     /* ---- 3. Launcher ------------------------------------------ */
-    #scg-launch{
+    #scg-tl-launch{
       position:fixed;z-index:2147483645;left:20px;bottom:20px;
       display:inline-flex;align-items:center;gap:12px;
       min-height:66px;padding:0 22px 0 12px;
@@ -3491,18 +3491,18 @@
       cursor:pointer;
       transition:transform .18s cubic-bezier(.2,.7,.3,1),border-color .18s,box-shadow .18s,background .18s;
     }
-    #scg-launch:before{
+    #scg-tl-launch:before{
       content:'';position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;
       background:linear-gradient(150deg,color-mix(in srgb,var(--scg-accent) 26%,transparent),transparent 46%);
       opacity:.5;
     }
-    #scg-launch:hover{
+    #scg-tl-launch:hover{
       transform:translateY(-2px);
       border-color:color-mix(in srgb,var(--scg-accent) 55%,var(--scg-line-strong));
       box-shadow:var(--scg-shadow),0 0 0 5px color-mix(in srgb,var(--scg-accent) 14%,transparent);
     }
-    #scg-launch:active{transform:translateY(0)}
-    #scg-launch .scg-launch-icon{
+    #scg-tl-launch:active{transform:translateY(0)}
+    #scg-tl-launch .scg-launch-icon{
       position:relative;z-index:1;
       display:inline-grid;place-items:center;width:44px;height:44px;flex:none;
       border:1px solid color-mix(in srgb,var(--scg-accent) 45%,transparent);
@@ -3510,16 +3510,16 @@
       background:color-mix(in srgb,var(--scg-accent) 16%,var(--scg-surface-3));
       color:var(--scg-accent);font-style:normal;
     }
-    #scg-launch .scg-launch-icon .scg-icon{width:23px;height:23px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
-    #scg-launch .scg-launch-copy{position:relative;z-index:1;display:flex;flex-direction:column;gap:3px;text-align:left;min-width:0}
-    #scg-launch .scg-launch-copy strong{font-size:14px;font-weight:650;line-height:1.1;letter-spacing:-.005em}
-    #scg-launch .scg-launch-copy small{
+    #scg-tl-launch .scg-launch-icon .scg-icon{width:23px;height:23px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round}
+    #scg-tl-launch .scg-launch-copy{position:relative;z-index:1;display:flex;flex-direction:column;gap:3px;text-align:left;min-width:0}
+    #scg-tl-launch .scg-launch-copy strong{font-size:14px;font-weight:650;line-height:1.1;letter-spacing:-.005em}
+    #scg-tl-launch .scg-launch-copy small{
       color:var(--scg-muted);font-size:11px;line-height:1.1;
       font-variant-numeric:tabular-nums;
     }
 
     /* ---- 4. Toast --------------------------------------------- */
-    #scg-gallery-toast{
+    #scg-tl-toast{
       position:fixed;z-index:2147483647;left:50%;bottom:26px;
       max-width:min(640px,calc(100vw - 32px));
       padding:12px 18px;
@@ -3531,7 +3531,7 @@
       transform:translate(-50%,14px);
       transition:opacity .2s,transform .2s,visibility .2s;
     }
-    #scg-gallery-toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
+    #scg-tl-toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
 
     /* ---- 5. Application shell --------------------------------- */
     #${APP_ID}{
@@ -5027,10 +5027,10 @@
       #${APP_ID} .scg-viewer-footer{width:calc(100% - 16px);margin:0 8px 8px;gap:7px;padding:7px}
       #${APP_ID} .scg-viewer-thumb{width:48px;height:48px;border-radius:var(--scg-r-sm)}
       #${APP_ID} .scg-viewer-footer .scg-lightbox-actions [data-copy-current]{display:none}
-      #scg-launch{left:12px;bottom:12px;min-height:58px;padding:0 17px 0 10px;gap:10px}
-      #scg-launch .scg-launch-icon{width:38px;height:38px;border-radius:12px}
-      #scg-launch .scg-launch-copy strong{font-size:13px}
-      #scg-launch .scg-launch-copy small{font-size:10.5px}
+      #scg-tl-launch{left:12px;bottom:12px;min-height:58px;padding:0 17px 0 10px;gap:10px}
+      #scg-tl-launch .scg-launch-icon{width:38px;height:38px;border-radius:12px}
+      #scg-tl-launch .scg-launch-copy strong{font-size:13px}
+      #scg-tl-launch .scg-launch-copy small{font-size:10.5px}
     }
 
     /* Very short windows: give the canvas the vertical budget. */
@@ -5061,7 +5061,7 @@
     /* ---- 21. Reduced motion ------------------------------------ */
     @media(prefers-reduced-motion:reduce){
       #${APP_ID},#${APP_ID} *,#${APP_ID} *:before,#${APP_ID} *:after,
-      #scg-launch,#scg-launch *,#scg-gallery-toast{
+      #scg-tl-launch,#scg-tl-launch *,#scg-tl-toast{
         animation-duration:.001ms !important;
         animation-iteration-count:1 !important;
         transition-duration:.001ms !important;
@@ -5073,7 +5073,7 @@
         animation:none !important;border-color:var(--scg-accent);opacity:.72;
       }
       #${APP_ID} .scg-card:hover,#${APP_ID} .scg-viewer-thumb:hover,
-      #scg-launch:hover,#${APP_ID} .scg-embed-placeholder button:hover{transform:none}
+      #scg-tl-launch:hover,#${APP_ID} .scg-embed-placeholder button:hover{transform:none}
       #${APP_ID} .scg-lightbox .scg-nav:hover{transform:translateY(-50%)}
     }
 
@@ -5088,16 +5088,16 @@
   document.head.appendChild(style);
 
   const launch = document.createElement('button');
-  launch.id = 'scg-launch';
-  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Gallery</strong><small data-launch-detail>Media browser · v${APP_VERSION}</small></span>`;
-  launch.setAttribute('aria-label', 'Open SimpCity thread gallery');
+  launch.id = 'scg-tl-launch';
+  launch.innerHTML = `${iconWell('gallery', 'scg-launch-icon')}<span class="scg-launch-copy"><strong>Open Timeline</strong><small data-launch-detail>Media browser · v${APP_VERSION}</small></span>`;
+  launch.setAttribute('aria-label', 'Open SimpCity Thread Gallery Timeline');
   document.body.appendChild(launch);
 
   function refreshLaunchButton() {
     const count = state.items.filter(isMediaItem).length;
     const detail = launch.querySelector('[data-launch-detail]');
     if (detail) detail.textContent = count ? `Media browser · ${count.toLocaleString()} indexed` : `Media browser · v${APP_VERSION}`;
-    launch.setAttribute('aria-label', count ? `Open SimpCity thread gallery, ${count} media items indexed` : 'Open SimpCity thread gallery');
+    launch.setAttribute('aria-label', count ? `Open SimpCity Thread Gallery Timeline, ${count} media items indexed` : 'Open SimpCity Thread Gallery Timeline');
   }
 
   const app = document.createElement('section');
@@ -5105,13 +5105,13 @@
   app.setAttribute('data-ui', 'gallery');
   app.setAttribute('role', 'dialog');
   app.setAttribute('aria-modal', 'true');
-  app.setAttribute('aria-label', 'SimpCity Thread Gallery');
+  app.setAttribute('aria-label', 'SimpCity Thread Gallery Timeline');
   app.innerHTML = `
     <div class="scg-plate">
       <header class="scg-header">
         <div class="scg-brand">
           <div class="scg-brand-mark" aria-hidden="true">${icon('gallery')}</div>
-          <div><b>Gallery</b><small>Media browser</small></div>
+          <div><b>Timeline</b><small>Media browser</small></div>
         </div>
         <div class="scg-thread-context">
           <h1 data-thread-title>Thread gallery</h1>
@@ -5122,17 +5122,17 @@
           <div class="scg-scan-actions" role="group" aria-label="Scan sources">
             <button data-action="page" data-tooltip="Index the page you are on">${iconWell('page')}<span>This page</span></button>
             <span class="scg-source-page"><select data-source-page aria-label="Thread page to load"></select><button data-action="load-source-page" data-tooltip="Load the selected thread page" aria-label="Load the selected thread page">${iconWell('download')}</button></span>
-            <button class="scg-scan-thread-danger scg-tip-end" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
+            <button class="scg-scan-thread-danger scg-tip-end" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-tl-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
           </div>
-          <span class="scg-scan-warning" id="scg-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
+          <span class="scg-scan-warning" id="scg-tl-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
         </nav>
         <div class="scg-header-actions">
-          <button data-action="filters-toggle" data-tooltip="Hide filters" aria-expanded="true" aria-controls="scg-filter-panel" aria-label="Hide filters">${iconWell('chevron')}<span>Filters</span></button>
+          <button data-action="filters-toggle" data-tooltip="Hide filters" aria-expanded="true" aria-controls="scg-tl-filter-panel" aria-label="Hide filters">${iconWell('chevron')}<span>Filters</span></button>
           <span class="scg-header-rule" aria-hidden="true"></span>
           <button data-action="settings" data-tooltip="Settings and diagnostics" aria-label="Settings and diagnostics">${iconWell('settings')}<span>Settings</span></button>
           <span class="scg-menu-wrap">
-            <button data-action="overflow" class="scg-tip-end" data-tooltip="More options" aria-label="More options" aria-haspopup="true" aria-expanded="false" aria-controls="scg-overflow-menu">${iconWell('more')}<span>More</span></button>
-            <div class="scg-menu" id="scg-overflow-menu" role="menu" aria-label="More options">
+            <button data-action="overflow" class="scg-tip-end" data-tooltip="More options" aria-label="More options" aria-haspopup="true" aria-expanded="false" aria-controls="scg-tl-overflow-menu">${iconWell('more')}<span>More</span></button>
+            <div class="scg-menu" id="scg-tl-overflow-menu" role="menu" aria-label="More options">
               <div class="scg-menu-label" role="presentation">Appearance</div>
               <button data-action="theme" role="menuitem">${iconWell('palette')}<span>Theme</span></button>
               <button data-action="density" role="menuitem">${iconWell('layout')}<span>Compact cards</span></button>
@@ -5144,7 +5144,7 @@
           <button class="scg-close scg-tip-end" data-tooltip="Close gallery (Esc)" aria-label="Close gallery">${iconWell('close', 'scg-icon-well-danger')}</button>
         </div>
       </header>
-      <section class="scg-filter-panel" id="scg-filter-panel" aria-label="Filters and view options">
+      <section class="scg-filter-panel" id="scg-tl-filter-panel" aria-label="Filters and view options">
         <div class="scg-filters" role="group" aria-label="Filter by media type">
           <button class="active" data-filter="all" aria-pressed="true">${icon('gallery')}<b>All</b><span aria-hidden="true">0</span></button>
           <button data-filter="image" aria-pressed="false">${icon('image')}<b>Images</b><span aria-hidden="true">0</span></button>
@@ -5164,8 +5164,8 @@
             <button data-layout-mode="feed" data-tooltip="Wide feed layout (L)" aria-pressed="false">${iconWell('feed')}<span>Feed</span></button>
           </div>
           <span class="scg-refine-wrap">
-            <button class="scg-refine-trigger" data-action="refine-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="scg-refine-popover">${iconWell('sliders')}<span>Refine</span><em data-refine-count hidden>0</em></button>
-            <div class="scg-refine-popover" id="scg-refine-popover" role="group" aria-label="Refine results">
+            <button class="scg-refine-trigger" data-action="refine-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="scg-tl-refine-popover">${iconWell('sliders')}<span>Refine</span><em data-refine-count hidden>0</em></button>
+            <div class="scg-refine-popover" id="scg-tl-refine-popover" role="group" aria-label="Refine results">
               <h2>Refine results</h2>
               <div class="scg-refinebar">
                 <label>Sort <select data-sort><option value="thread-asc">Oldest replies first</option><option value="thread-desc">Newest replies first</option><option value="author">Author A-Z</option><option value="host">Host A-Z</option><option value="type">Media type</option></select></label>
@@ -5202,8 +5202,8 @@
           <button class="scg-primary scg-tip-up scg-tip-end" data-action="download-selected" disabled>${iconWell('archive', 'scg-icon-well-primary')}<span>Download ZIP (0)</span></button>
         </div>
         <div class="scg-progress">
-          <button class="scg-progress-summary scg-tip-up scg-tip-end" data-action="download-details" data-tooltip="Open the download queue" aria-expanded="false" aria-controls="scg-download-queue"><span class="scg-progress-track"><span class="scg-progress-fill"></span></span><span class="scg-progress-text">Downloads idle</span></button>
-          <aside class="scg-download-popover" id="scg-download-queue" aria-label="Download queue">
+          <button class="scg-progress-summary scg-tip-up scg-tip-end" data-action="download-details" data-tooltip="Open the download queue" aria-expanded="false" aria-controls="scg-tl-download-queue"><span class="scg-progress-track"><span class="scg-progress-fill"></span></span><span class="scg-progress-text">Downloads idle</span></button>
+          <aside class="scg-download-popover" id="scg-tl-download-queue" aria-label="Download queue">
             <header><b>Download queue</b><div><button data-action="clear-download-history" data-tooltip="Forget saved-file markers" aria-label="Clear download history">${iconWell('history')}<span>Clear history</span></button><button data-action="close-download-details" aria-label="Close the download queue">${iconWell('close')}<span>Close</span></button></div></header>
             <div class="scg-download-overall" role="status" aria-live="polite">No downloads yet.</div>
             <div class="scg-download-jobs"></div>
@@ -5226,13 +5226,13 @@
           <section class="scg-settings-card"><h3>${icon('reset')} Reset</h3><p>Reset visual preferences, or also forget SAVED download markers.</p><div class="scg-settings-actions"><button data-action="reset-preferences">${iconWell('reset')}<span>Reset preferences</span></button><button class="danger" data-action="reset-everything">${iconWell('trash', 'scg-icon-well-danger')}<span>Reset preferences + history</span></button></div></section>
           <section class="scg-settings-card"><h3>${icon('info')} Cross-host permission</h3><p>The wildcard connection permission is intentionally retained for media hosted on changing third-party domains.</p><div class="scg-permission-note">The script only requests URLs discovered in thread replies or known resolver endpoints. It contains no analytics or telemetry.</div></section>
         </div></div>
-        <footer class="scg-settings-foot"><span>SimpCity Thread Gallery <b>v${APP_VERSION}</b></span><span>Settings remain on this device unless you export them.</span></footer>
+        <footer class="scg-settings-foot"><span>SimpCity Thread Gallery Timeline <b>v${APP_VERSION}</b></span><span>Settings remain on this device unless you export them.</span></footer>
       </section>
     </div>
-    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><label class="scg-confirm-preference" data-confirm-preference hidden><input type="checkbox"><span></span></label><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
+    <div class="scg-confirm-panel" role="dialog" aria-modal="true" aria-labelledby="scg-tl-confirm-title"><section class="scg-confirm-dialog"><div class="scg-confirm-icon">${icon('info')}</div><h2 id="scg-tl-confirm-title" data-confirm-title>Confirm action</h2><p data-confirm-message></p><label class="scg-confirm-preference" data-confirm-preference hidden><input type="checkbox"><span></span></label><div><button data-confirm-cancel>${iconWell('close')}<span>Cancel</span></button><button class="scg-confirm-accept" data-confirm-accept>${iconWell('check', 'scg-icon-well-primary')}<span>Continue</span></button></div></section></div>`;
   document.body.appendChild(app);
   const toast = document.createElement('div');
-  toast.id = 'scg-gallery-toast';
+  toast.id = 'scg-tl-toast';
   toast.className = 'scg-toast';
   toast.setAttribute('role', 'status');
   toast.setAttribute('aria-live', 'polite');
@@ -5264,7 +5264,7 @@
     closeLightbox();
     releaseRenderedMedia();
     state.renderedItems = [];
-    document.getElementById('scg-launch')?.focus({ preventScroll: true });
+    document.getElementById('scg-tl-launch')?.focus({ preventScroll: true });
   }
 
   const controllers = Object.freeze({

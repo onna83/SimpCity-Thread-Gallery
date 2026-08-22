@@ -1,6 +1,10 @@
-# SimpCity Thread Gallery
+# SimpCity Thread Gallery Timeline
 
-SimpCity Thread Gallery is a self-contained Tampermonkey userscript that turns a long SimpCity thread into a compact media browser. It indexes images, videos, embeds, links, text, and reply details without sending your browsing activity anywhere.
+> **This branch is a fork.** It carries the timeline redesign and has its own script
+> identity, so it installs alongside the stable script rather than replacing it.
+> The stable release lives on `main` at v0.9.7.1 and does not receive this work.
+
+SimpCity Thread Gallery Timeline is a self-contained Tampermonkey userscript that turns a long SimpCity thread into a compact media browser. It indexes images, videos, embeds, links, text, and reply details without sending your browsing activity anywhere.
 
 The target is `https://simpcity.cr/threads/*`. The forum and the material shown by the gallery may be adults-only.
 
@@ -25,9 +29,18 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 3. Copy its contents into a new Tampermonkey script and save it.
 4. Visit a SimpCity thread and use **Open Gallery** at the bottom-left.
 
-Do not install renamed copies side by side. The canonical filename is [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js).
+The canonical filename is [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js) on this branch too — the fork replaces the file rather than sitting beside it, so only one version is checked out at a time.
 
-The `@namespace` (`local.simpcity.gallery.hybrid`) is fixed and must never change, because Tampermonkey uses it together with `@name` to recognise an installed script. In 0.9.7 the `@name` was deliberately shortened from `SimpCity Thread Gallery — Hybrid UI Fork` to `SimpCity Thread Gallery`. Anyone who installed 0.9.6 or earlier may therefore see the update offered as a separate script: remove the old entry after installing 0.9.7 so only one copy stays active.
+This fork uses a **separate script identity** throughout, which is what lets both versions be installed in Tampermonkey at once:
+
+| | Stable (`main`) | Timeline (this branch) |
+|---|---|---|
+| `@name` | `SimpCity Thread Gallery` | `SimpCity Thread Gallery Timeline` |
+| `@namespace` | `local.simpcity.gallery.hybrid` | `local.simpcity.gallery.timeline` |
+| Version line | 0.9.7.x | 0.10.x |
+| Settings + history | `sc-thread-gallery-*` | `sc-thread-gallery-timeline-*` |
+
+Storage is deliberately **not** shared. The fork starts with an empty download history, so items you already downloaded show as un-downloaded here until it builds its own record.
 
 ## Install from GreasyFork
 
@@ -35,7 +48,7 @@ Because the script targets an adult-content forum, the GreasyFork network serves
 
 [Install the stable SimpCity Thread Gallery release](https://sleazyfork.org/en/scripts/591943)
 
-Choose **Install this script** and approve it in Tampermonkey. The public listing tracks the published stable release; release-candidate work stays on a feature branch until it is reviewed and approved.
+That listing serves the **stable** script from `main`. The timeline fork is not published — install it by pasting this branch's [SimpCity-Thread-Gallery.user.js](SimpCity-Thread-Gallery.user.js) into Tampermonkey directly.
 
 ## Media support
 
@@ -63,7 +76,8 @@ Use the GitHub bug or feature template once the public repository is connected. 
 
 ## Development and releases
 
-- `main` contains the current v0.9.7.1 release.
+- `main` contains the stable v0.9.7.1 release and is frozen with respect to this fork.
+- `timeline` (this branch) carries the UI/UX overhaul on its own 0.10.x version line.
 - `develop` is the integration branch for ongoing development.
 - Release work is completed on feature branches and promoted to `main` after checks pass.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.
