@@ -424,17 +424,33 @@ test('dock preserves active queue status and cancellation across selection state
   assert.match(source, /state\.downloading \? 'Cancel ZIP queue'/);
 });
 
-test('plate and dock are persistent translucent glass surfaces without a dock collapse mode', () => {
+test('plate and dock share one glass recipe, tuned per surface, with no dock collapse mode', () => {
   assert.doesNotMatch(source, /activityCollapsed|activity-collapsed|activity-toggle|setting-activity-collapsed/);
-  assert.match(source, /\.scg-plate\{[\s\S]*?color-mix\(in srgb,var\(--scg-surface\) 60%,transparent\)/);
-  assert.match(source, /backdrop-filter:blur\(26px\) saturate\(160%\)/);
-  assert.match(source, /\.scg-plate:before\{/);
+
+  // Both surfaces opt into the shared recipe in markup.
+  assert.match(source, /class="scg-plate scg-glass"/);
+  assert.match(source, /class="scg-bulkbar scg-activitybar scg-glass"/);
+
+  // The recipe is declared exactly once. Re-duplicating it across surfaces is
+  // the regression this guards against; asserting literal blur values instead
+  // just forces a paired test edit on every restyle.
+  assert.equal((source.match(/\.scg-glass\{/g) || []).length, 1);
+  assert.match(source, /\.scg-glass\{[\s\S]*?--scg-glass-top,60%/);
+  assert.match(source, /\.scg-glass:before\{/);
+  assert.match(source, /\.scg-glass>\*\{position:relative;z-index:1\}/);
+
+  // The dock is the heavier surface, expressed purely as variable overrides.
+  assert.match(source, /\.scg-activitybar\{[\s\S]*?--scg-glass-blur:34px/);
+  assert.match(source, /\.scg-activitybar\{[\s\S]*?--scg-glass-sat:180%/);
   assert.match(source, /\.scg-activitybar\{[\s\S]*?min-height:64px/);
-  assert.match(source, /color-mix\(in srgb,var\(--scg-surface\) 52%,transparent\)/);
-  assert.match(source, /backdrop-filter:blur\(34px\) saturate\(180%\)/);
-  assert.match(source, /-webkit-backdrop-filter:blur\(34px\) saturate\(180%\)/);
-  assert.match(source, /\.scg-activitybar:before\{/);
   assert.match(source, /\.scg-activitybar\{[\s\S]*?border-radius:18px/);
+
+  // Highlight and shade come from the theme, not from hardcoded black/white.
+  const glass = source.slice(source.indexOf('.scg-glass{'), source.indexOf('.scg-glass>*'));
+  assert.doesNotMatch(glass, /#ffffff|#000000/);
+  assert.match(glass, /var\(--scg-hi\)/);
+  assert.match(glass, /var\(--scg-lo\)/);
+
   assert.match(source, /min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px/);
 });
 

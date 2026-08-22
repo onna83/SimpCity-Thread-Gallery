@@ -3464,6 +3464,8 @@
       --scg-shadow:0 18px 48px #00000094;
       --scg-shadow-sm:0 6px 18px #0000006b;
       --scg-focus:#7cc8ff;
+      --scg-hi:#ffffff;
+      --scg-lo:#000000;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e97a3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       --scg-r-xs:5px;
       --scg-r-sm:8px;
@@ -3525,6 +3527,8 @@
       --scg-shadow:0 16px 40px #2c3c5226;
       --scg-shadow-sm:0 5px 14px #2c3c5220;
       --scg-focus:#0a5fc4;
+      --scg-hi:#ffffff;
+      --scg-lo:#2c3c52;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f5a68' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       color-scheme:light;
     }
@@ -3554,6 +3558,8 @@
       --scg-danger:#ff86a6;
       --scg-danger-soft:#2e1424;
       --scg-focus:#a8b3ff;
+      --scg-hi:#dfe6ff;
+      --scg-lo:#000000;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393a0c2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       color-scheme:dark;
     }
@@ -3583,6 +3589,8 @@
       --scg-danger:#f08a9e;
       --scg-danger-soft:#2b1519;
       --scg-focus:#e3c479;
+      --scg-hi:#ffffff;
+      --scg-lo:#000000;
       --scg-select-arrow:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a1a2a8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
       color-scheme:dark;
     }
@@ -3732,26 +3740,32 @@
     }
     #${APP_ID}.open{display:grid;grid-template-rows:auto minmax(0,1fr)}
 
-    /* The instrument plate: one floating unit instead of four glued bars. */
-    #${APP_ID} .scg-plate{
-      position:relative;z-index:40;
-      margin:12px 12px 0;
-      border:1px solid color-mix(in srgb,#ffffff 16%,var(--scg-line));border-radius:var(--scg-r-lg);
+    /* ---- Glass: one recipe, tuned per surface ------------------ */
+    #${APP_ID} .scg-glass{
+      position:relative;
+      border:1px solid color-mix(in srgb,var(--scg-hi) var(--scg-glass-edge,16%),var(--scg-line));
       background:linear-gradient(135deg,
-        color-mix(in srgb,var(--scg-surface) 60%,transparent),
-        color-mix(in srgb,var(--scg-surface-2) 42%,transparent));
-      box-shadow:0 14px 38px #00000052,
-        inset 0 1px 0 color-mix(in srgb,#ffffff 13%,transparent),
-        inset 0 -1px 0 color-mix(in srgb,#000000 14%,transparent);
-      backdrop-filter:blur(26px) saturate(160%);
-      -webkit-backdrop-filter:blur(26px) saturate(160%);
+        color-mix(in srgb,var(--scg-surface) var(--scg-glass-top,60%),transparent),
+        color-mix(in srgb,var(--scg-surface-2) var(--scg-glass-bottom,42%),transparent));
+      box-shadow:var(--scg-glass-cast,0 14px 38px color-mix(in srgb,var(--scg-lo) 32%,transparent)),
+        inset 0 1px 0 color-mix(in srgb,var(--scg-hi) var(--scg-glass-sheen,13%),transparent),
+        inset 0 -1px 0 color-mix(in srgb,var(--scg-lo) var(--scg-glass-base,14%),transparent);
+      backdrop-filter:blur(var(--scg-glass-blur,26px)) saturate(var(--scg-glass-sat,160%));
+      -webkit-backdrop-filter:blur(var(--scg-glass-blur,26px)) saturate(var(--scg-glass-sat,160%));
       isolation:isolate;
     }
-    #${APP_ID} .scg-plate:before{
+    #${APP_ID} .scg-glass:before{
       content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
-      background:linear-gradient(112deg,color-mix(in srgb,#ffffff 9%,transparent),transparent 34%,color-mix(in srgb,var(--scg-accent) 5%,transparent));
+      background:linear-gradient(112deg,color-mix(in srgb,var(--scg-hi) 9%,transparent),transparent 34%,color-mix(in srgb,var(--scg-accent) 5%,transparent));
     }
-    #${APP_ID} .scg-plate>*{position:relative;z-index:1}
+    #${APP_ID} .scg-glass>*{position:relative;z-index:1}
+
+    /* The instrument plate: one floating unit instead of four glued bars. */
+    #${APP_ID} .scg-plate{
+      z-index:40;
+      margin:12px 12px 0;
+      border-radius:var(--scg-r-lg);
+    }
 
     #${APP_ID} .scg-header{
       z-index:2; /* Keep header tooltips above the later-painted filter row. */
@@ -4423,22 +4437,17 @@
       display:flex;align-items:center;gap:12px;flex-wrap:nowrap;
       width:min(1240px,calc(100% - 36px));min-height:64px;
       padding:11px 14px;
-      border:1px solid color-mix(in srgb,#ffffff 22%,var(--scg-line-strong));border-radius:18px;
-      background:linear-gradient(135deg,
-        color-mix(in srgb,var(--scg-surface) 52%,transparent),
-        color-mix(in srgb,var(--scg-surface-2) 34%,transparent));
-      box-shadow:0 20px 54px #00000070,
-        inset 0 1px 0 color-mix(in srgb,#ffffff 20%,transparent),
-        inset 0 -1px 0 color-mix(in srgb,#000000 18%,transparent);
-      backdrop-filter:blur(34px) saturate(180%);
-      -webkit-backdrop-filter:blur(34px) saturate(180%);
-      isolation:isolate;
+      --scg-glass-edge:22%;
+      --scg-glass-top:52%;
+      --scg-glass-bottom:34%;
+      --scg-glass-sheen:20%;
+      --scg-glass-base:18%;
+      --scg-glass-blur:34px;
+      --scg-glass-sat:180%;
+      --scg-glass-cast:0 20px 54px color-mix(in srgb,var(--scg-lo) 44%,transparent);
+      border-color:color-mix(in srgb,var(--scg-hi) 22%,var(--scg-line-strong));
+      border-radius:18px;
     }
-    #${APP_ID} .scg-activitybar:before{
-      content:'';position:absolute;z-index:0;inset:1px;border-radius:inherit;pointer-events:none;
-      background:linear-gradient(115deg,color-mix(in srgb,#ffffff 13%,transparent),transparent 38%,color-mix(in srgb,var(--scg-accent) 7%,transparent));
-    }
-    #${APP_ID} .scg-activitybar>*{position:relative;z-index:1}
 
     #${APP_ID} .scg-activity-state{display:flex;align-items:center;gap:10px;min-width:0;flex:0 1 260px;padding-left:4px}
     #${APP_ID} .scg-activity-state>i{
@@ -5302,7 +5311,7 @@
   app.setAttribute('aria-modal', 'true');
   app.setAttribute('aria-label', 'SimpCity Thread Gallery Timeline');
   app.innerHTML = `
-    <div class="scg-plate">
+    <div class="scg-plate scg-glass">
       <header class="scg-header">
         <div class="scg-brand">
           <div class="scg-brand-mark" aria-hidden="true">${icon('gallery')}</div>
@@ -5384,7 +5393,7 @@
     </div>
     <div class="scg-stage">
       <main class="scg-scroll" tabindex="-1"><div class="scg-grid"></div></main>
-      <footer class="scg-bulkbar scg-activitybar" aria-label="Activity, selection and downloads">
+      <footer class="scg-bulkbar scg-activitybar scg-glass" aria-label="Activity, selection and downloads">
         <div class="scg-activity-state"><i aria-hidden="true"></i><div><b class="scg-status">Ready</b><span data-activity-detail>Open a page or scan the thread</span></div></div>
         <button class="scg-selection-toggle scg-tip-up" data-action="selection-mode" data-tooltip="Turn selection mode on or off">${iconWell('select')}<span>Select media</span></button>
         <div class="scg-bulk-actions" role="group" aria-label="Bulk selection">
