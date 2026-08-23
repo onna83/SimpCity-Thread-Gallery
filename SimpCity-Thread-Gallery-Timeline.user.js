@@ -72,6 +72,11 @@
   // justifies rows. CSS multi-column masonry stays the default until they
   // prove out. Both preserve aspect ratio; they differ in which axis varies.
   const VIRTUALIZED_LAYOUTS = Object.freeze(['flow', 'timeline']);
+  // Both layout pickers are built from the same list, so adding a layout is
+  // one entry rather than two hand-maintained option lists.
+  const layoutOptionsMarkup = () => LAYOUT_MODES
+    .map(mode => `<option value="${mode}">${escapeHtml(LAYOUT_LABELS[mode])}</option>`)
+    .join('');
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
   const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
@@ -523,7 +528,7 @@
   const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
   const ICON_PATHS = {
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
-    settings: '<circle cx="12" cy="12" r="3.1"/><path d="M19.35 13.4a1.55 1.55 0 0 0 .32 1.72l.05.06a1.85 1.85 0 1 1-2.62 2.62l-.06-.06a1.55 1.55 0 0 0-1.72-.31 1.55 1.55 0 0 0-.94 1.42v.17a1.85 1.85 0 1 1-3.7 0v-.09a1.55 1.55 0 0 0-1-1.42 1.55 1.55 0 0 0-1.72.31l-.06.06a1.85 1.85 0 1 1-2.62-2.62l.06-.06a1.55 1.55 0 0 0 .31-1.72 1.55 1.55 0 0 0-1.42-.94h-.17a1.85 1.85 0 1 1 0-3.7h.09a1.55 1.55 0 0 0 1.42-1 1.55 1.55 0 0 0-.31-1.72l-.06-.06a1.85 1.85 0 1 1 2.62-2.62l.06.06a1.55 1.55 0 0 0 1.72.31h.07a1.55 1.55 0 0 0 .94-1.42v-.17a1.85 1.85 0 1 1 3.7 0v.09a1.55 1.55 0 0 0 .94 1.42 1.55 1.55 0 0 0 1.72-.31l.06-.06a1.85 1.85 0 1 1 2.62 2.62l-.06.06a1.55 1.55 0 0 0-.31 1.72v.07a1.55 1.55 0 0 0 1.42.94h.17a1.85 1.85 0 1 1 0 3.7h-.09a1.55 1.55 0 0 0-1.42.94Z"/>',
+    settings: '<path d="M9.74 6.12 10.24 2.97 13.76 2.97 14.26 6.12 15.96 7.1 18.94 5.96 20.7 9 18.22 11.01 18.22 12.99 20.7 15 18.94 18.04 15.96 16.9 14.26 17.88 13.76 21.03 10.24 21.03 9.74 17.88 8.04 16.9 5.06 18.04 3.3 15 5.78 12.99 5.78 11.01 3.3 9 5.06 5.96 8.04 7.1Z"/><circle cx="12" cy="12" r="2.8"/>',
     layout: '<rect x="3.25" y="4.25" width="7.25" height="7.25" rx="1.6"/><rect x="13.5" y="4.25" width="7.25" height="4.5" rx="1.6"/><rect x="3.25" y="14.5" width="7.25" height="5.25" rx="1.6"/><rect x="13.5" y="11.75" width="7.25" height="8" rx="1.6"/>',
     keyboard: '<rect x="2.75" y="6" width="18.5" height="12" rx="2.5"/><path d="M6.5 9.75h.01M10 9.75h.01M13.5 9.75h.01M17 9.75h.01M6.5 13.9h.01M17 13.9h.01M9.5 13.9h5" stroke-width="2.4"/>',
     close: '<path d="m6.75 6.75 10.5 10.5M17.25 6.75 6.75 17.25"/>',
@@ -962,17 +967,12 @@
     const themeButton = app.querySelector('[data-action="theme"]');
     setIconButton(themeButton, 'palette', `Theme: ${THEME_LABELS[state.theme]}`);
     if (themeButton) themeButton.title = `Current theme: ${THEME_LABELS[state.theme]}. Activate for ${THEME_LABELS[nextTheme]}.`;
-    app.querySelectorAll('[data-layout-mode]').forEach(button => {
-      const active = button.dataset.layoutMode === state.layoutMode;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-pressed', String(active));
-    });
     refreshRefineTrigger();
     const themeSelect = app.querySelector('[data-setting-theme]');
     const accentSelect = app.querySelector('[data-setting-accent]');
     const densitySelect = app.querySelector('[data-setting-density]');
     const filterCheck = app.querySelector('[data-setting-filters-collapsed]');
-    const layoutSelect = app.querySelector('[data-setting-layout]');
+    const layoutSelects = app.querySelectorAll('[data-setting-layout]');
     const sizeSliders = app.querySelectorAll('[data-card-scale]');
     const sizeLabels = app.querySelectorAll('[data-card-scale-value]');
     if (themeSelect) themeSelect.value = state.theme;
@@ -985,7 +985,7 @@
     });
     sizeLabels.forEach(label => { label.textContent = state.layoutMode === 'feed' ? 'Feed' : `${cardScale}%`; });
     if (filterCheck) filterCheck.checked = state.filtersCollapsed;
-    if (layoutSelect) layoutSelect.value = state.layoutMode;
+    layoutSelects.forEach(select => { select.value = state.layoutMode; });
     refreshThreadHeader();
     // Density and card size feed the packing geometry, and both commit
     // shell-only. A live windowed layout has to re-pack itself; when one is not
@@ -4728,25 +4728,8 @@
     #${APP_ID} .scg-filters button.active>span{background:color-mix(in srgb,var(--scg-accent-ink) 18%,transparent);color:var(--scg-accent-ink)}
     #${APP_ID} .scg-filters button.active .scg-icon{color:var(--scg-accent-ink)}
 
-    #${APP_ID} .scg-layout-switcher{
-      display:inline-flex;align-items:center;gap:2px;flex:none;
-      padding:3px;border:1px solid var(--scg-line);border-radius:13px;
-      background:var(--scg-surface-2);
-    }
-    #${APP_ID} .scg-layout-switcher button{
-      display:inline-flex;align-items:center;gap:7px;
-      min-width:34px;min-height:32px;padding:6px 9px;
-      border:1px solid transparent;border-radius:var(--scg-r-sm);
-      background:transparent;color:var(--scg-muted);
-      font-size:var(--scg-fs-sm);cursor:pointer;
-    }
-    #${APP_ID} .scg-layout-switcher button>span{font-size:var(--scg-fs-sm)}
-    #${APP_ID} .scg-layout-switcher button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
-    #${APP_ID} .scg-layout-switcher button.active{
-      border-color:var(--scg-line-strong);background:var(--scg-surface);color:var(--scg-text);
-      box-shadow:var(--scg-shadow-sm);
-    }
-    #${APP_ID} .scg-layout-switcher button.active .scg-icon{color:var(--scg-accent)}
+    #${APP_ID} .scg-layout-select{flex:none}
+    #${APP_ID} .scg-layout-select select{min-width:126px}
 
     #${APP_ID} .scg-viewbar{display:flex;align-items:center;gap:10px;flex:1;min-width:0;justify-content:flex-end}
     #${APP_ID} .scg-view-summary{
@@ -4860,7 +4843,6 @@
     #${APP_ID} .scg-plate .scg-search input,
     #${APP_ID} .scg-plate .scg-scan-actions,
     #${APP_ID} .scg-plate .scg-filters,
-    #${APP_ID} .scg-plate .scg-layout-switcher,
     #${APP_ID} .scg-plate .scg-view-pagination,
     #${APP_ID} .scg-plate .scg-refine-trigger:not(.active):not([aria-expanded="true"]){
       background:color-mix(in srgb,var(--scg-surface-2) 50%,transparent);
@@ -6018,7 +6000,6 @@
       #${APP_ID} .scg-filters{width:100%}
       #${APP_ID} .scg-filters button{flex:1;justify-content:center;padding:6px 8px}
       #${APP_ID} .scg-filters button b{display:none}
-      #${APP_ID} .scg-layout-switcher button>span{display:none}
       #${APP_ID} .scg-viewbar{flex-wrap:wrap;gap:8px}
       #${APP_ID} .scg-view-summary{flex-basis:100%;margin:0}
       #${APP_ID} .scg-viewbar label{font-size:var(--scg-fs-2xs)}
@@ -6230,13 +6211,7 @@
             <button data-action="collapse-all" data-tooltip="Collapse all reply groups in the filtered results">${iconWell('chevron')}<span>Collapse All</span></button>
             <button data-action="expand-all" data-tooltip="Expand all reply groups in the filtered results">${iconWell('chevron')}<span>Expand All</span></button>
           </span>
-          <div class="scg-layout-switcher" role="group" aria-label="Gallery layout">
-            <button data-layout-mode="masonry" data-tooltip="Masonry layout (L)" aria-pressed="true">${iconWell('masonry')}<span>Masonry</span></button>
-            <button data-layout-mode="flow" data-tooltip="Flow: masonry that renders only what is on screen, for very large threads (L)" aria-pressed="false">${iconWell('layout')}<span>Flow</span></button>
-            <button data-layout-mode="timeline" data-tooltip="Timeline: justified rows of even height with clean edges, rendered only where you are looking (L)" aria-pressed="false">${iconWell('timeline')}<span>Timeline</span></button>
-            <button data-layout-mode="grid" data-tooltip="Uniform grid layout (L)" aria-pressed="false">${iconWell('grid')}<span>Grid</span></button>
-            <button data-layout-mode="feed" data-tooltip="Wide feed layout (L)" aria-pressed="false">${iconWell('feed')}<span>Feed</span></button>
-          </div>
+          <label class="scg-layout-select" data-tooltip="Gallery layout. L cycles through them.">Layout <select data-setting-layout aria-label="Gallery layout">${layoutOptionsMarkup()}</select></label>
           <span class="scg-refine-wrap">
             <button class="scg-refine-trigger" data-action="refine-toggle" aria-haspopup="true" aria-expanded="false" aria-controls="scg-tl-refine-popover">${iconWell('sliders')}<span>Refine</span><em data-refine-count hidden>0</em></button>
             <div class="scg-refine-popover" id="scg-tl-refine-popover" role="group" aria-label="Refine results">
@@ -6298,7 +6273,7 @@
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="flow">Flow (virtualized)</option><option value="timeline">Timeline (virtualized)</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Flow and Timeline render only what is on screen, which is what makes them suitable for very large threads.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -6404,9 +6379,6 @@
   app.querySelector('[data-action="density"]').onclick = () => {
     commitState({ compact: !state.compact }, { persist: true, shellOnly: true });
   };
-  app.querySelectorAll('[data-layout-mode]').forEach(button => {
-    button.onclick = () => setLayoutMode(button.dataset.layoutMode);
-  });
   app.querySelector('[data-action="theme"]').onclick = () => {
     const current = Math.max(0, THEME_MODES.indexOf(state.theme));
     commitState({ theme: THEME_MODES[(current + 1) % THEME_MODES.length] }, { persist: true, shellOnly: true });
@@ -6450,9 +6422,12 @@
   app.querySelector('[data-setting-density]').onchange = event => {
     commitState({ compact: event.target.value === 'compact' }, { persist: true, shellOnly: true });
   };
-  app.querySelector('[data-setting-layout]').onchange = event => {
-    setLayoutMode(LAYOUT_MODES.includes(event.target.value) ? event.target.value : 'masonry');
-  };
+  // The plate and the settings sheet share the picker, so they share a handler.
+  app.querySelectorAll('[data-setting-layout]').forEach(select => {
+    select.onchange = event => {
+      setLayoutMode(LAYOUT_MODES.includes(event.target.value) ? event.target.value : DEFAULT_SETTINGS.layoutMode);
+    };
+  });
   app.querySelector('[data-setting-filters-collapsed]').onchange = event => {
     commitState({ filtersCollapsed: event.target.checked }, { persist: true, shellOnly: true });
   };

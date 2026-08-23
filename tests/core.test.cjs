@@ -659,6 +659,15 @@ test('buildViewPages treats All as one view without a separate code path', () =>
   assert.deepEqual(plain(buildViewPages([])), [[]]);
 });
 
+test('icon geometry stays larger than the stroke that draws it', () => {
+  // Icons render at 17px with a 1.6 stroke, so a feature under ~1.5 units in a
+  // 24-unit box is thinner than its own outline and reads as a smudge. The gear
+  // was twelve such curves; it is now a real toothed outline.
+  assert.match(source, /settings: '<path d="M9\.74 6\.12/);
+  assert.doesNotMatch(source, /settings: '<circle/);
+  assert.match(source, /stroke-width="1\.6"/);
+});
+
 test('display labels are free of known mojibake sequences', () => {
   assert.doesNotMatch(source, /Ã|Â|â|�/);
   assert.match(source, /Media browser · v\$\{APP_VERSION\}/);
@@ -1211,9 +1220,9 @@ test('timeline justifies rows through the same windowed renderer as flow', () =>
   assert.match(source, /\[data-layout="timeline"\] \.scg-flow-cell\{container-type:inline-size\}/);
   assert.match(source, /@container \(max-width:240px\)/);
 
-  // Both are offered, and both are reachable from the settings sheet.
-  assert.match(source, /data-layout-mode="timeline"/);
-  assert.match(source, /<option value="timeline">Timeline \(virtualized\)<\/option>/);
+  // Both are offered, from one option list that both pickers are built from.
+  assert.match(source, /const layoutOptionsMarkup = \(\) => LAYOUT_MODES/);
+  assert.doesNotMatch(source, /data-layout-mode/);
 });
 
 test('changing layout rebuilds the grid rather than restyling the shell', () => {
@@ -1223,8 +1232,10 @@ test('changing layout rebuilds the grid rather than restyling the shell', () => 
   // previous layout built still on screen at its old coordinates.
   assert.match(source, /function setLayoutMode\(next, announce = false\) \{[\s\S]*?commitState\(\{ layoutMode: next \}, \{ persist: true \}\);/);
   assert.doesNotMatch(source, /layoutMode[^\n]*\{ persist: true, shellOnly: true \}/);
-  assert.match(source, /button\.onclick = \(\) => setLayoutMode\(button\.dataset\.layoutMode\)/);
+  // The plate and the settings sheet share one picker, so they share a handler.
+  assert.match(source, /app\.querySelectorAll\('\[data-setting-layout\]'\)\.forEach\(select => \{/);
   assert.match(source, /setLayoutMode\(LAYOUT_MODES\.includes\(event\.target\.value\)/);
+  assert.match(source, /layoutSelects\.forEach\(select => \{ select\.value = state\.layoutMode; \}\)/);
 
   // Density and card size stay shell-only, so a live windowed layout re-packs
   // itself instead of keeping geometry it computed at another size.
