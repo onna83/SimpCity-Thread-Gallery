@@ -1032,3 +1032,32 @@ test('flow leaves the other layouts and reply grouping on the old path', () => {
   assert.match(source, /\[data-layout="masonry"\] \.scg-grid:not\(\.grouped\)\{display:block;columns:5/);
   assert.match(source, /layoutMode: 'masonry',/);
 });
+
+test('image work is capped, prioritized and cancellable', () => {
+  assert.match(source, /const RESOLVE_CONCURRENCY = 3/);
+  assert.match(source, /const DECODE_CONCURRENCY = 6/);
+  // Both queues are drained by one pump, so neither can starve the other.
+  assert.match(source, /while \(mediaScheduler\.resolving < RESOLVE_CONCURRENCY\)/);
+  assert.match(source, /while \(mediaScheduler\.decoding < DECODE_CONCURRENCY\)/);
+
+  // Priority is computed at pick time, so the order follows the scroll without
+  // anything re-sorting a queue on every frame.
+  assert.match(source, /function mediaRevealPriority\(key\)/);
+  assert.match(source, /const centre = scrollArea\.scrollTop \+ \(scrollArea\.clientHeight \/ 2\)/);
+  assert.match(source, /const priority = mediaRevealPriority\(entry\.key\)/);
+
+  // Decode before swap: the card must not flash a half-painted image, and a
+  // failed decode must leave the thumbnail alone rather than break it.
+  assert.match(source, /probe\.decode\(\)\.then\(reveal, done\)/);
+  assert.match(source, /entry\.img\.isConnected && entry\.img\.src !== entry\.url/);
+
+  // Scrolling away cancels the swap.
+  assert.match(source, /cancelMediaReveal\(key\);/);
+  assert.match(source, /cancelAllMediaReveals\(\);/);
+
+  // Both render paths go through the scheduler; neither resolves inline.
+  ["scheduleMediaReveal(item, entry.target);", "if (img) scheduleMediaReveal(item, img);"]
+    .forEach(call => assert.ok(source.includes(call), 'missing: ' + call));
+  const observer = source.slice(source.indexOf('function observeFullImages'), source.indexOf('function releaseRenderedMedia'));
+  assert.doesNotMatch(observer, /resolveForDisplay/);
+});

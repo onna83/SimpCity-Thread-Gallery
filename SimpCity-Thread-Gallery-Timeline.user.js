@@ -2806,16 +2806,16 @@
         if (!entry.isIntersecting) return;
         state.imageObserver.unobserve(entry.target);
         const item = itemsByKey().get(entry.target.dataset.resolveKey);
-        if (!item || item.type !== 'image') return;
-        resolveForDisplay(item).then(result => {
-          if (result.url && entry.target.isConnected && entry.target.src !== result.url) entry.target.src = result.url;
-        });
+        // Same caps for the non-virtualized layouts: the observer decides what
+        // is near, the scheduler decides how much runs at once.
+        scheduleMediaReveal(item, entry.target);
       });
     }, { root: app.querySelector('.scg-scroll'), rootMargin: '700px 0px', threshold: 0.01 });
     app.querySelectorAll('img[data-resolve-key]').forEach(img => state.imageObserver.observe(img));
   }
 
   function releaseRenderedMedia() {
+    cancelAllMediaReveals();
     teardownFlow();
     state.imageObserver?.disconnect();
     const grid = document.querySelector(`#${APP_ID} .scg-grid`);
@@ -3001,6 +3001,140 @@
     return Array.from({ length: count }, (_, index) => `<div class="scg-skeleton" aria-hidden="true"><div class="scg-skeleton-media" style="--scg-skeleton-height:${160 + ((index % 4) * 36)}px"></div><div class="scg-skeleton-line"></div><div class="scg-skeleton-line short"></div></div>`).join('');
   }
 
+  /* ---- Media scheduler -----------------------------------------------------
+     Mounting a screenful of cards used to fire a resolution per card at once.
+     This caps the work, orders it by distance from the middle of the viewport,
+     and drops anything that scrolls away before its turn.
+     ------------------------------------------------------------------------ */
+
+  const RESOLVE_CONCURRENCY = 3;
+  const DECODE_CONCURRENCY = 6;
+
+  const mediaScheduler = { queue: new Map(), resolving: 0, decoding: 0 };
+
+  // Distance from the middle of the viewport. Computed at pick time rather
+  // than stored, so the order follows the scroll without re-sorting a queue.
+  function mediaRevealPriority(key) {
+    const model = flow.model;
+    const scrollArea = flowScrollArea();
+    if (!model || !scrollArea) return 0;
+    const cell = model.byKey.get(key);
+    if (!cell) return Number.MAX_SAFE_INTEGER;
+    const centre = scrollArea.scrollTop + (scrollArea.clientHeight / 2);
+    return Math.abs((cell.y + (cell.height / 2)) - centre);
+  }
+
+  function nextScheduledEntry(phase) {
+    let best = null;
+    let bestPriority = Infinity;
+    mediaScheduler.queue.forEach(entry => {
+      if (entry.phase !== phase || entry.cancelled) return;
+      const priority = mediaRevealPriority(entry.key);
+      if (priority < bestPriority) {
+        best = entry;
+        bestPriority = priority;
+      }
+    });
+    return best;
+  }
+
+  function finishScheduled(entry) {
+    mediaScheduler.queue.delete(entry.key);
+    pumpMediaScheduler();
+  }
+
+  function startResolve(entry) {
+    entry.phase = 'resolving';
+    mediaScheduler.resolving += 1;
+    // resolveForDisplay memoizes on the item, so a resolve that lands after the
+    // card scrolled away is banked rather than wasted. No failure bookkeeping
+    // is added here: resolution.failedAt drives a cooldown that the download
+    // path also reads, and a display failure must not poison a download.
+    resolveForDisplay(entry.item).then(result => {
+      mediaScheduler.resolving -= 1;
+      if (entry.cancelled || !result || !result.url) return finishScheduled(entry);
+      entry.url = result.url;
+      entry.phase = 'ready';
+      pumpMediaScheduler();
+    }, () => {
+      mediaScheduler.resolving -= 1;
+      finishScheduled(entry);
+    });
+  }
+
+  function startDecode(entry) {
+    entry.phase = 'decoding';
+    mediaScheduler.decoding += 1;
+    const probe = new Image();
+    probe.decoding = 'async';
+    try { probe.fetchPriority = mediaRevealPriority(entry.key) < 400 ? 'high' : 'low'; }
+    catch { /* Not every engine exposes fetchPriority. */ }
+
+    const done = () => {
+      mediaScheduler.decoding -= 1;
+      finishScheduled(entry);
+    };
+    // Swap only once the bytes are decoded, so the card never flashes a
+    // half-painted image. On failure the thumbnail is left in place rather
+    // than replaced by a broken one.
+    const reveal = () => {
+      if (!entry.cancelled && entry.img.isConnected && entry.img.src !== entry.url) {
+        entry.img.src = entry.url;
+      }
+      done();
+    };
+    probe.src = entry.url;
+    if (typeof probe.decode === 'function') probe.decode().then(reveal, done);
+    else {
+      probe.onload = reveal;
+      probe.onerror = done;
+    }
+  }
+
+  function pumpMediaScheduler() {
+    while (mediaScheduler.resolving < RESOLVE_CONCURRENCY) {
+      const entry = nextScheduledEntry('pending');
+      if (!entry) break;
+      startResolve(entry);
+    }
+    while (mediaScheduler.decoding < DECODE_CONCURRENCY) {
+      const entry = nextScheduledEntry('ready');
+      if (!entry) break;
+      startDecode(entry);
+    }
+  }
+
+  function scheduleMediaReveal(item, img) {
+    if (!item || !img || item.type !== 'image' || !item.selectionKey) return;
+    const existing = mediaScheduler.queue.get(item.selectionKey);
+    if (existing) {
+      // Remounted before its turn came round: keep the queue slot, point it at
+      // the new node.
+      existing.img = img;
+      existing.cancelled = false;
+      return;
+    }
+    mediaScheduler.queue.set(item.selectionKey, {
+      key: item.selectionKey, item, img, phase: 'pending', cancelled: false, url: '',
+    });
+    pumpMediaScheduler();
+  }
+
+  function cancelMediaReveal(key) {
+    const entry = mediaScheduler.queue.get(key);
+    if (!entry) return;
+    entry.cancelled = true;
+    // In-flight work is left to settle; only the DOM swap is suppressed.
+    if (entry.phase === 'pending') mediaScheduler.queue.delete(key);
+  }
+
+  function cancelAllMediaReveals() {
+    mediaScheduler.queue.forEach(entry => { entry.cancelled = true; });
+    mediaScheduler.queue.forEach((entry, key) => {
+      if (entry.phase === 'pending') mediaScheduler.queue.delete(key);
+    });
+  }
+
   /* ---- Flow: computed masonry with a windowed renderer ---------------------
      CSS multi-column cannot be virtualized -- the browser must see every box to
      balance the columns -- so this mode positions cards itself and mounts only
@@ -3076,14 +3210,10 @@
     grid.appendChild(node);
     flow.mounted.set(cell.key, node);
     // No IntersectionObserver here: anything mounted is already inside the
-    // overscan band, so resolution can start immediately.
+    // overscan band. The scheduler decides when it actually gets fetched.
     if (item.type === 'image') {
       const img = node.querySelector('img[data-resolve-key]');
-      if (img) {
-        resolveForDisplay(item).then(result => {
-          if (result.url && img.isConnected && img.src !== result.url) img.src = result.url;
-        }).catch(() => {});
-      }
+      if (img) scheduleMediaReveal(item, img);
     }
   }
 
@@ -3100,6 +3230,7 @@
   function unmountFlowCards(keep) {
     flow.mounted.forEach((node, key) => {
       if (keep.has(key)) return;
+      cancelMediaReveal(key);
       releaseFlowNode(node);
       flow.mounted.delete(key);
     });
