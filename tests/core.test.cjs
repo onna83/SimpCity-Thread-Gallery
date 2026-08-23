@@ -477,6 +477,19 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /selectedMatch = !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
 });
 
+test('reply headers pin as the spine of the scroll instead of boxing the media', () => {
+  // The bordered box is gone, which is what lets the header stick at all:
+  // overflow:hidden on an ancestor disables position:sticky outright.
+  assert.match(source, /\.scg-reply-group\{margin:0 0 var\(--scg-s-5\)\}/);
+  assert.doesNotMatch(source, /\.scg-reply-group\{[^}]*overflow:hidden/);
+  assert.match(source, /\.scg-reply-group>header\{\s*position:sticky;top:0;z-index:12;/);
+  // A group with nothing selected reports nothing, rather than a row of zeroes.
+  assert.match(source, /replySelection\.selected \? `\$\{replySelection\.selected\} of \$\{replySelection\.total\} selected` : ''/);
+  assert.match(source, /\.scg-reply-identity>span:empty\{display:none\}/);
+  // And the grid stops insetting itself away from a box that no longer exists.
+  assert.doesNotMatch(source, /\.scg-group-grid\{[^}]*padding:12px/);
+});
+
 test('dock mounts its three regions from what is true, not from a mode', () => {
   // Selection region: present exactly while something is selected.
   assert.match(source, /classList\.toggle\('has-selection', count > 0\)/);

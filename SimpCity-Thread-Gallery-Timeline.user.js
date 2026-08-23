@@ -2020,7 +2020,7 @@
         input.setAttribute('aria-checked', replySelection.indeterminate ? 'mixed' : String(replySelection.checked));
       }
       const count = group.querySelector('[data-reply-selection-count]');
-      if (count) count.textContent = `${replySelection.selected} of ${replySelection.total} downloadable selected`;
+      if (count) count.textContent = replySelectionSummary(replySelection);
     });
   }
 
@@ -2780,6 +2780,10 @@
     return state.items.filter(item => replyKey(item) === key && isDownloadableMedia(item) && matchesActiveFilters(item, q));
   }
 
+  function replySelectionSummary(replySelection) {
+    return replySelection.selected ? `${replySelection.selected} of ${replySelection.total} selected` : '';
+  }
+
   function replySelectionState(key) {
     const eligible = replyDownloadableItems(key);
     const selected = eligible.reduce((total, item) => total + (state.selected.has(item.selectionKey) ? 1 : 0), 0);
@@ -3023,7 +3027,8 @@
       const replySelect = replySelection.total
         ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
         : '';
-      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item)).join('')}</div></section>`;
+      const itemCount = `${group.entries.length} item${group.entries.length === 1 ? '' : 's'}`;
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header><button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}</button>${replySelect}<div class="scg-reply-identity"><b>${escapeHtml(replyLabel)}</b><span>Page ${Number(first.pageNumber || 1)}</span><span>${escapeHtml(first.author || 'Unknown')}</span><span>${itemCount}</span><span data-reply-selection-count>${replySelectionSummary(replySelection)}</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item)).join('')}</div></section>`;
     }).join('');
   }
 
@@ -4721,7 +4726,7 @@
     /* Layout: masonry */
     #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){display:block;columns:5 var(--scg-masonry-width,280px);column-gap:14px}
     #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:7 var(--scg-masonry-compact-width,195px);column-gap:10px}
-    #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:5 var(--scg-group-width,250px);column-gap:12px;padding:12px}
+    #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:5 var(--scg-group-width,250px);column-gap:12px;padding:0}
     #${APP_ID}[data-layout="masonry"].compact .scg-group-grid{columns:7 var(--scg-group-compact-width,180px);column-gap:9px}
     #${APP_ID}[data-layout="masonry"] .scg-card,
     #${APP_ID}[data-layout="masonry"] .scg-skeleton{break-inside:avoid;margin:0 0 14px}
@@ -4768,7 +4773,7 @@
     }
     #${APP_ID}[data-layout="grid"].compact .scg-grid:not(.grouped),
     #${APP_ID}[data-layout="grid"].compact .scg-group-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--scg-grid-compact-min,180px)),1fr));gap:10px}
-    #${APP_ID}[data-layout="grid"] .scg-group-grid{padding:12px}
+    #${APP_ID}[data-layout="grid"] .scg-group-grid{padding:0}
     #${APP_ID}[data-layout="grid"] .scg-card{display:flex;height:var(--scg-grid-height,386px);min-width:0;flex-direction:column;margin:0;break-inside:auto}
     #${APP_ID}[data-layout="grid"].compact .scg-card{height:var(--scg-grid-compact-height,312px)}
     #${APP_ID}[data-layout="grid"] .scg-preview,
@@ -4794,7 +4799,7 @@
     #${APP_ID}[data-layout="feed"] .scg-group-grid{
       display:grid;grid-template-columns:minmax(0,1100px);justify-content:center;gap:14px;columns:auto;
     }
-    #${APP_ID}[data-layout="feed"] .scg-group-grid{max-width:1140px;margin:auto;padding:14px}
+    #${APP_ID}[data-layout="feed"] .scg-group-grid{max-width:1140px;margin:auto;padding:0}
     #${APP_ID}[data-layout="feed"] .scg-card{width:100%;min-width:0;margin:0;break-inside:auto}
     #${APP_ID}[data-layout="feed"] .scg-media,
     #${APP_ID}[data-layout="feed"] .scg-linkcard{
@@ -5048,23 +5053,36 @@
 
     /* ---- 12. Reply groups ------------------------------------- */
     #${APP_ID} .scg-grid.grouped{display:block;columns:auto}
-    #${APP_ID} .scg-reply-group{
-      margin:0 0 16px;overflow:hidden;
-      border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
+    /* Groups are no longer boxes drawn around the media. The header is the
+       spine of the scroll: it pins while its own run of cards passes and hands
+       over to the next one. No backdrop-filter here -- a page can hold twenty
+       of these, and twenty blurred surfaces is not worth the seam it saves. */
+    #${APP_ID} .scg-reply-group{margin:0 0 var(--scg-s-5)}
+    #${APP_ID} .scg-reply-group>header{
+      position:sticky;top:0;z-index:12;
+      display:flex;align-items:center;gap:var(--scg-s-2);
+      margin:0 0 var(--scg-s-3);padding:var(--scg-s-2) var(--scg-s-3);
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
       background:var(--scg-surface);box-shadow:var(--scg-shadow-sm);
     }
-    #${APP_ID} .scg-reply-group>header{
-      display:flex;align-items:center;justify-content:space-between;gap:12px;
-      padding:11px 14px;
-      border-bottom:1px solid var(--scg-line);background:var(--scg-surface-2);
+    #${APP_ID} .scg-reply-identity{
+      display:flex;align-items:baseline;gap:var(--scg-s-2);flex:1;min-width:0;overflow:hidden;
+      white-space:nowrap;
     }
-    #${APP_ID} .scg-reply-group>header>div{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+    #${APP_ID} .scg-reply-identity>*{flex:none}
+    #${APP_ID} .scg-reply-identity>span:nth-of-type(2){
+      flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    }
+    /* Separators live in CSS so the markup stays readable text. */
+    #${APP_ID} .scg-reply-identity>span:before{content:'·';margin-right:var(--scg-s-2);opacity:.55}
+    #${APP_ID} .scg-reply-identity>span:empty{display:none}
     #${APP_ID} .scg-reply-group>header b{font-size:var(--scg-fs-md);color:var(--scg-text)}
     #${APP_ID} .scg-reply-group>header span{color:var(--scg-muted);font-size:var(--scg-fs-sm)}
+    #${APP_ID} .scg-reply-identity [data-reply-selection-count]{color:var(--scg-accent);font-weight:600}
     #${APP_ID} .scg-reply-group>header a{
       display:inline-flex;align-items:center;gap:6px;flex:none;
-      padding:5px 9px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
-      color:var(--scg-accent);text-decoration:none;font-size:var(--scg-fs-sm);font-weight:550;white-space:nowrap;
+      min-height:30px;padding:5px 9px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      color:var(--scg-accent);text-decoration:none;font-size:var(--scg-fs-xs);font-weight:550;white-space:nowrap;
     }
     #${APP_ID} .scg-reply-group>header a:hover{background:var(--scg-accent-soft)}
     #${APP_ID} .scg-reply-group>header a .scg-icon{width:14px;height:14px}
@@ -5392,22 +5410,24 @@
       margin:-8px 0 18px;color:var(--scg-text-soft);font-size:var(--scg-fs-sm);cursor:pointer;
     }
     #${APP_ID} .scg-reply-toggle{
-      display:inline-flex;align-items:center;gap:5px;flex:none;
-      min-height:30px;padding:5px 8px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
-      background:var(--scg-surface);color:var(--scg-text-soft);font-size:var(--scg-fs-xs);cursor:pointer;
+      display:inline-grid;place-items:center;flex:none;
+      width:30px;min-height:30px;padding:0;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
+      background:var(--scg-surface-2);color:var(--scg-text-soft);cursor:pointer;
     }
     #${APP_ID} .scg-reply-select{
-      align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
+      display:inline-flex;align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
-      background:var(--scg-surface);color:var(--scg-text-soft);font-size:var(--scg-fs-xs);cursor:pointer;
+      background:var(--scg-surface-2);color:var(--scg-text-soft);font-size:var(--scg-fs-xs);cursor:pointer;
     }
-    #${APP_ID} .scg-reply-select{display:inline-flex}
+    #${APP_ID} .scg-reply-select:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-reply-select>span{display:none}
     #${APP_ID} .scg-reply-select input{width:16px;height:16px;margin:0;accent-color:var(--scg-accent);cursor:pointer}
     #${APP_ID} .scg-reply-select .scg-icon{color:var(--scg-accent)}
     #${APP_ID} .scg-reply-toggle:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
     #${APP_ID} .scg-reply-toggle .scg-icon{transition:transform .18s ease}
     #${APP_ID} .scg-reply-toggle[aria-expanded="false"] .scg-icon{transform:rotate(-90deg)}
-    #${APP_ID} .scg-reply-group.collapsed>header{border-bottom:0}
+    #${APP_ID} .scg-reply-group.collapsed{margin-bottom:var(--scg-s-2)}
+    #${APP_ID} .scg-reply-group.collapsed>header{margin-bottom:0}
     #${APP_ID} .scg-collapsed-status{color:var(--scg-accent);font-size:var(--scg-fs-2xs);font-style:normal;font-weight:650;text-transform:uppercase;letter-spacing:.06em}
     #${APP_ID} .scg-confirm-preference[hidden]{display:none}
     #${APP_ID} .scg-confirm-preference input{accent-color:var(--scg-accent)}
@@ -5813,8 +5833,8 @@
       #${APP_ID} .scg-top>span{display:none}
       #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:2 var(--scg-masonry-width,280px);column-gap:8px}
       #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:2 var(--scg-masonry-compact-width,195px);column-gap:8px}
-      #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:2 var(--scg-group-width,250px);padding:8px}
-      #${APP_ID}[data-layout="masonry"].compact .scg-group-grid{columns:2 var(--scg-group-compact-width,180px);padding:8px}
+      #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:2 var(--scg-group-width,250px);padding:0}
+      #${APP_ID}[data-layout="masonry"].compact .scg-group-grid{columns:2 var(--scg-group-compact-width,180px);padding:0}
       #${APP_ID}[data-layout="grid"] .scg-grid:not(.grouped),
       #${APP_ID}[data-layout="grid"] .scg-group-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--scg-grid-min,250px)),1fr));gap:8px}
       #${APP_ID}[data-layout="grid"].compact .scg-grid:not(.grouped),
@@ -5834,6 +5854,8 @@
       #${APP_ID}[data-layout="feed"] .scg-skeleton{display:block;height:auto}
       #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:182px}
       #${APP_ID} .scg-badge span{display:none}
+      #${APP_ID} .scg-reply-group>header a>span{display:none}
+      #${APP_ID} .scg-reply-identity>span:nth-of-type(3){display:none}
       #${APP_ID} .scg-activitybar{width:calc(100% - 16px);min-height:68px;bottom:8px;gap:8px;padding:9px 10px;border-radius:16px}
       #${APP_ID} .scg-activity-state{flex:1 1 100%}
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
