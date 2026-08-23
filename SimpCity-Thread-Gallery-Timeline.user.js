@@ -63,6 +63,14 @@
   // hue. They survive as accents on the dark theme.
   const LEGACY_THEME_ACCENTS = Object.freeze({ midnight: 'indigo', graphite: 'amber' });
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500]);
+  const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
+  const SORT_LABELS = Object.freeze({
+    'thread-asc': 'Oldest replies first',
+    'thread-desc': 'Newest replies first',
+    author: 'Author A-Z',
+    host: 'Host A-Z',
+    type: 'Media type',
+  });
 
   const storage = {
     mode: typeof GM_getValue === 'function' && typeof GM_setValue === 'function' ? 'Tampermonkey isolated storage' : 'page localStorage fallback',
@@ -205,6 +213,7 @@
   let selectionRevision = 0;
   let visibleItemsCache = null;
   let facetCache = null;
+  let facetCountCache = null;
   let itemIndexCache = null;
 
   function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
@@ -2764,11 +2773,14 @@
     return String(state.query || '').trim().toLowerCase();
   }
 
-  function matchesActiveFilters(item, q = normalizedQuery()) {
+  // `skip` excludes one facet from the test. Counting a facet's own values
+  // against itself would report 0 for everything you did not pick, which is
+  // useless; skipping it answers "how many if I picked this instead".
+  function matchesActiveFilters(item, q = normalizedQuery(), skip = '') {
     const typeMatch = !state.filter || state.filter === 'all' || item.type === state.filter ||
       (state.filter === 'video' && item.type === 'embed');
-    const authorMatch = !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter;
-    const hostMatch = !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter;
+    const authorMatch = skip === 'author' || !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter;
+    const hostMatch = skip === 'host' || !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter;
     const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
     return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
   }
@@ -2979,6 +2991,37 @@
 
   // Author and host lists only change when the dataset does, so memoize them
   // on datasetRevision instead of re-deriving on every render.
+  /* ---- Active filters ------------------------------------------------------
+     Filtering used to be legible only as a number on the Refine button. These
+     two are pure so the harness can pin down what counts as active and what
+     undoing one facet leaves behind.
+     ------------------------------------------------------------------------ */
+
+  // Only facets that hide things belong here. Sort and grouping rearrange what
+  // is already on screen; they cost nobody a result, so putting them in a bar
+  // about what is being withheld would misreport them.
+  function activeFacetChips(view, filterLabels) {
+    const labels = filterLabels || {};
+    const chips = [];
+    const query = String(view.query || '').trim();
+    if (view.filter && view.filter !== 'all') chips.push({ facet: 'filter', label: 'Type', value: labels[view.filter] || view.filter });
+    if (query) chips.push({ facet: 'query', label: 'Search', value: query });
+    if (view.authorFilter && view.authorFilter !== 'all') chips.push({ facet: 'author', label: 'Author', value: view.authorFilter });
+    if (view.hostFilter && view.hostFilter !== 'all') chips.push({ facet: 'host', label: 'Host', value: view.hostFilter });
+    if (view.selectedOnly) chips.push({ facet: 'selected', label: 'Showing', value: 'Selected only' });
+    return chips;
+  }
+
+  function facetClearPatch(facet) {
+    if (facet === 'filter') return { filter: 'all' };
+    if (facet === 'query') return { query: '' };
+    if (facet === 'author') return { authorFilter: 'all' };
+    if (facet === 'host') return { hostFilter: 'all' };
+    if (facet === 'selected') return { selectedOnly: false };
+    if (facet === 'all') return { filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false };
+    return null;
+  }
+
   function facetOptions() {
     if (facetCache && facetCache.revision === datasetRevision) return facetCache;
     const authors = [...new Set(state.items.map(item => item.author).filter(Boolean))]
@@ -2989,18 +3032,62 @@
     return facetCache;
   }
 
+  // Counts move with every other facet, so this is memoized on the filters
+  // rather than on the dataset alone.
+  function facetCounts() {
+    const signature = [
+      datasetRevision, selectionRevision, state.filter, state.query,
+      state.authorFilter, state.hostFilter, state.selectedOnly,
+    ].join('\u0000');
+    if (facetCountCache && facetCountCache.signature === signature) return facetCountCache;
+    const q = normalizedQuery();
+    const authors = new Map();
+    const hosts = new Map();
+    state.items.forEach(item => {
+      if (item.author && matchesActiveFilters(item, q, 'author')) {
+        authors.set(item.author, (authors.get(item.author) || 0) + 1);
+      }
+      if (matchesActiveFilters(item, q, 'host')) {
+        const host = itemSourceHost(item);
+        if (host) hosts.set(host, (hosts.get(host) || 0) + 1);
+      }
+    });
+    facetCountCache = { signature, authors, hosts };
+    return facetCountCache;
+  }
+
+  function renderActiveFacets() {
+    const app = document.getElementById(APP_ID);
+    const bar = app && app.querySelector('[data-active-facets]');
+    if (!bar) return;
+    const chips = activeFacetChips(state, FILTER_LABELS);
+    bar.hidden = chips.length === 0;
+    if (!chips.length) {
+      bar.replaceChildren();
+      return;
+    }
+    const chipMarkup = chips.map(chip => `<button class="scg-facet-chip" data-clear-facet="${escapeHtml(chip.facet)}" aria-label="Clear ${escapeHtml(chip.label.toLowerCase())} filter ${escapeHtml(chip.value)}"><b>${escapeHtml(chip.label)}</b><span title="${escapeHtml(chip.value)}">${escapeHtml(chip.value)}</span>${icon('close')}</button>`).join('');
+    const clearAll = chips.length > 1
+      ? `<button class="scg-facet-clear" data-clear-facet="all">${icon('reset')}<span>Clear all</span></button>`
+      : '';
+    bar.innerHTML = chipMarkup + clearAll;
+  }
+
   function refreshFilterControls() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
     const { authors, hosts } = facetOptions();
+    const counts = facetCounts();
+    const withCount = (value, tally) => `${value} (${(tally.get(value) || 0).toLocaleString()})`;
     state.authorFilter = setSelectOptions(app.querySelector('[data-author-filter]'), [
       { value: 'all', label: `All authors (${authors.length})` },
-      ...authors.map(author => ({ value: author, label: author })),
+      ...authors.map(author => ({ value: author, label: withCount(author, counts.authors) })),
     ], state.authorFilter);
     state.hostFilter = setSelectOptions(app.querySelector('[data-host-filter]'), [
       { value: 'all', label: `All hosts (${hosts.length})` },
-      ...hosts.map(host => ({ value: host, label: host })),
+      ...hosts.map(host => ({ value: host, label: withCount(host, counts.hosts) })),
     ], state.hostFilter);
+    renderActiveFacets();
 
     const pageOptions = Array.from({ length: state.threadPageCount }, (_, index) => ({
       value: String(index + 1),
@@ -3044,9 +3131,13 @@
     app.querySelector('[data-page-size]').disabled = state.scanning;
     app.querySelector('[data-page-size]').value = String(state.perPage);
     const flowing = app.querySelector('.scg-grid')?.classList.contains('flowing');
-    app.querySelector('.scg-view-summary').textContent = flowing
-      ? `${matchedCount} matched - all shown`
-      : `${matchedCount} matched - showing ${state.renderedItems.length}`;
+    const indexed = state.items.length;
+    const rendered = state.renderedItems.length;
+    const count = value => Number(value).toLocaleString();
+    // Always a fraction of the whole, so filtering never reads as data loss.
+    app.querySelector('.scg-view-summary').textContent = matchedCount === indexed
+      ? (flowing ? `${count(indexed)} shown` : `${count(rendered)} of ${count(indexed)} shown`)
+      : (flowing ? `${count(matchedCount)} of ${count(indexed)} shown` : `${count(rendered)} shown · ${count(matchedCount)} of ${count(indexed)} match`);
   }
 
   function emptyStateMarkup() {
@@ -4523,6 +4614,39 @@
     }
     #${APP_ID}.filters-collapsed .scg-filter-panel{display:none}
 
+    /* Active filters stay visible even when the panel that set them is
+       collapsed -- a filter you cannot see is a filter you cannot undo. */
+    #${APP_ID} .scg-active-facets{
+      display:flex;align-items:center;gap:var(--scg-s-1);flex-wrap:wrap;
+      padding:0 var(--scg-s-3) var(--scg-s-2);
+    }
+    #${APP_ID} .scg-active-facets[hidden]{display:none}
+    #${APP_ID} .scg-facet-chip,#${APP_ID} .scg-facet-clear{
+      display:inline-flex;align-items:center;gap:var(--scg-s-2);max-width:100%;
+      min-height:28px;padding:4px 8px;
+      border:1px solid var(--scg-accent-line);border-radius:var(--scg-r-pill);
+      background:var(--scg-accent-soft);color:var(--scg-accent);
+      font-size:var(--scg-fs-xs);cursor:pointer;
+    }
+    #${APP_ID} .scg-facet-chip b{
+      flex:none;font-size:var(--scg-fs-2xs);font-weight:700;
+      text-transform:uppercase;letter-spacing:.08em;opacity:.72;
+    }
+    #${APP_ID} .scg-facet-chip span{
+      min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      color:var(--scg-text);font-weight:600;
+    }
+    #${APP_ID} .scg-facet-chip .scg-icon{width:13px;height:13px;flex:none;stroke-width:2.4;opacity:.7}
+    #${APP_ID} .scg-facet-chip:hover,#${APP_ID} .scg-facet-clear:hover{
+      border-color:var(--scg-accent);
+      background:color-mix(in srgb,var(--scg-accent) 22%,var(--scg-surface-3));
+    }
+    #${APP_ID} .scg-facet-chip:hover .scg-icon{opacity:1}
+    #${APP_ID} .scg-facet-clear{
+      border-color:var(--scg-line);background:var(--scg-surface-2);color:var(--scg-text-soft);
+    }
+    #${APP_ID} .scg-facet-clear .scg-icon{width:13px;height:13px;color:var(--scg-muted)}
+
     #${APP_ID} .scg-filters{
       display:flex;align-items:center;gap:2px;flex:none;max-width:100%;overflow-x:auto;
       padding:3px;border:1px solid var(--scg-line);border-radius:13px;
@@ -5772,6 +5896,7 @@
       #${APP_ID} .scg-header{grid-template-columns:auto minmax(0,1fr) auto;gap:10px;padding:9px 10px}
       #${APP_ID} .scg-thread-context{padding-left:10px}
       #${APP_ID} .scg-filter-panel{padding:0 10px 9px;gap:8px}
+      #${APP_ID} .scg-active-facets{padding:0 10px 9px}
       #${APP_ID} .scg-viewbar{flex-basis:100%;justify-content:flex-start}
       #${APP_ID} .scg-view-summary{margin-right:auto}
       #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 136px}
@@ -5815,6 +5940,8 @@
       #${APP_ID} .scg-source-page{flex:1;min-width:0}
       #${APP_ID} .scg-source-page select{min-width:0;width:100%}
       #${APP_ID} .scg-filter-panel{padding:0 8px 8px}
+      #${APP_ID} .scg-active-facets{padding:0 8px 8px;flex-wrap:nowrap;overflow-x:auto}
+      #${APP_ID} .scg-facet-chip{flex:none;max-width:56vw}
       #${APP_ID} .scg-filters{width:100%}
       #${APP_ID} .scg-filters button{flex:1;justify-content:center;padding:6px 8px}
       #${APP_ID} .scg-filters button b{display:none}
@@ -6041,7 +6168,7 @@
             <div class="scg-refine-popover" id="scg-tl-refine-popover" role="group" aria-label="Refine results">
               <h2>Refine results</h2>
               <div class="scg-refinebar">
-                <label>Sort <select data-sort><option value="thread-asc">Oldest replies first</option><option value="thread-desc">Newest replies first</option><option value="author">Author A-Z</option><option value="host">Host A-Z</option><option value="type">Media type</option></select></label>
+                <label>Sort <select data-sort>${Object.entries(SORT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></label>
                 <label>Group <select data-group-by><option value="none">Individual cards</option><option value="reply">Group by reply</option></select></label>
                 <label>Author <select data-author-filter></select></label>
                 <label>Host <select data-host-filter></select></label>
@@ -6059,6 +6186,7 @@
           <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${size}</option>`).join('')}</select></label>
         </div>
       </section>
+      <div class="scg-active-facets" data-active-facets role="group" aria-label="Active filters" hidden></div>
     </div>
     <div class="scg-stage">
       <main class="scg-scroll" tabindex="-1"><div class="scg-grid"></div></main>
@@ -6178,6 +6306,16 @@
   };
   app.querySelector('[data-action="expand-all"]').onclick = () => {
     if (setReplyGroupsCollapsed(visibleItems(), false)) render();
+  };
+  // One delegated handler: the bar is rebuilt on every render, so per-chip
+  // listeners would have to be rebound with it.
+  app.querySelector('[data-active-facets]').onclick = event => {
+    const chip = event.target.closest('[data-clear-facet]');
+    if (!chip) return;
+    const patch = facetClearPatch(chip.dataset.clearFacet);
+    if (!patch) return;
+    if ('query' in patch) app.querySelector('[data-search]').value = patch.query;
+    commitState({ ...patch, viewPage: 1 }, { persist: true });
   };
   app.querySelector('[data-action="reset-filters"]').onclick = () => {
     app.querySelector('[data-search]').value = '';

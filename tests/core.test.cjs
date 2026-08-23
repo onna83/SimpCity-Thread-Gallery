@@ -477,6 +477,53 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /selectedMatch = !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
 });
 
+test('active filters are visible and individually reversible', () => {
+  const { activeFacetChips, facetClearPatch } = evaluateSlice(
+    'function activeFacetChips',
+    'function facetOptions',
+    ['activeFacetChips', 'facetClearPatch'],
+  );
+  const labels = { image: 'Images' };
+
+  assert.deepEqual(plain(activeFacetChips({ filter: 'all', query: '   ', authorFilter: 'all', hostFilter: 'all' }, labels)), []);
+
+  const chips = plain(activeFacetChips({
+    filter: 'image', query: '  beach ', authorFilter: 'anon', hostFilter: 'bunkr.cr', selectedOnly: true,
+  }, labels));
+  assert.deepEqual(chips.map(chip => chip.facet), ['filter', 'query', 'author', 'host', 'selected']);
+  assert.equal(chips[0].value, 'Images');
+  assert.equal(chips[1].value, 'beach');
+
+  // Sort and grouping rearrange what is already there rather than withholding
+  // anything, so they do not belong in a bar about what is being hidden.
+  assert.deepEqual(plain(activeFacetChips({ sort: 'author', groupBy: 'reply' }, labels)), []);
+
+  assert.deepEqual(plain(facetClearPatch('host')), { hostFilter: 'all' });
+  assert.deepEqual(plain(facetClearPatch('all')), {
+    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
+  });
+  assert.equal(facetClearPatch('nonsense'), null);
+});
+
+test('facet counts answer what each value would give, and the summary states the whole', () => {
+  // A facet counted against itself reports 0 for every value you did not pick.
+  assert.match(source, /function matchesActiveFilters\(item, q = normalizedQuery\(\), skip = ''\)/);
+  assert.match(source, /const authorMatch = skip === 'author' \|\|/);
+  assert.match(source, /const hostMatch = skip === 'host' \|\|/);
+  assert.match(source, /matchesActiveFilters\(item, q, 'author'\)/);
+  assert.match(source, /matchesActiveFilters\(item, q, 'host'\)/);
+  // Counts move with every other facet, so this cache cannot key on the dataset.
+  assert.match(source, /facetCountCache && facetCountCache\.signature === signature/);
+  assert.match(source, /withCount\(author, counts\.authors\)/);
+  assert.match(source, /withCount\(host, counts\.hosts\)/);
+  // The summary is always a fraction of the indexed total.
+  assert.match(source, /of \$\{count\(indexed\)\} shown/);
+  // The bar sits outside the collapsible panel: a filter you cannot see is a
+  // filter you cannot undo.
+  assert.match(source, /<\/section>\s*<div class="scg-active-facets"/);
+  assert.match(source, /\.scg-active-facets\[hidden\]\{display:none\}/);
+});
+
 test('reply headers pin as the spine of the scroll instead of boxing the media', () => {
   // The bordered box is gone, which is what lets the header stick at all:
   // overflow:hidden on an ancestor disables position:sticky outright.
