@@ -164,8 +164,8 @@
     activePlayers: new Set(),
     threadPageCount: 1,
     sourcePage: 1,
-    selectionMode: false,
     selected: new Set(),
+    selectionAnchor: null,
     collapsedReplies: new Set(),
     scanning: false,
     cancelScan: false,
@@ -1002,7 +1002,7 @@
     const app = document.getElementById(APP_ID);
     if (!app) return;
     app.querySelectorAll('.scg-menu.open, .scg-refine-popover.open').forEach(panel => panel.classList.remove('open'));
-    app.querySelectorAll('[data-action="overflow"], [data-action="refine-toggle"]').forEach(button => {
+    app.querySelectorAll('[data-action="overflow"], [data-action="refine-toggle"], [data-action="select-menu"]').forEach(button => {
       button.setAttribute('aria-expanded', 'false');
     });
   }
@@ -1649,32 +1649,90 @@
     return state.items.filter(item => isDownloadableMedia(item) && state.selected.has(item.selectionKey));
   }
 
-  function setSelected(item, selected) {
-    if (!isDownloadableMedia(item)) return;
-    const changed = selected ? !state.selected.has(item.selectionKey) : state.selected.has(item.selectionKey);
-    if (selected) state.selected.add(item.selectionKey);
-    else state.selected.delete(item.selectionKey);
+  /* ---- Selection gestures --------------------------------------------------
+     Selection is no longer a mode you enter. A click toggles one card, a
+     shift-click extends from the anchor, a ctrl/cmd-click toggles without
+     moving it. The arithmetic is pure so the harness can drive it.
+     ------------------------------------------------------------------------ */
+
+  function selectionRangeKeys(orderedKeys, anchorKey, targetKey) {
+    const to = orderedKeys.indexOf(targetKey);
+    if (to < 0) return [];
+    const from = orderedKeys.indexOf(anchorKey);
+    if (from < 0) return [targetKey];
+    return orderedKeys.slice(Math.min(from, to), Math.max(from, to) + 1);
+  }
+
+  function resolveSelectionGesture(options) {
+    const orderedKeys = options.orderedKeys || [];
+    const targetKey = options.targetKey;
+    const anchorKey = options.anchorKey;
+    const selected = options.selected;
+    // Duck-typed rather than `instanceof Set`: the harness hands this a Set from
+    // another realm, where instanceof is false.
+    const has = key => (selected && typeof selected.has === 'function' ? selected.has(key) : (selected || []).indexOf(key) >= 0);
+    if (options.range) {
+      // Extending always selects rather than toggling, so sweeping a range back
+      // and forth cannot punch holes in what it already covered.
+      return { add: selectionRangeKeys(orderedKeys, anchorKey, targetKey), remove: [], anchorKey: anchorKey || targetKey };
+    }
+    const turningOn = !has(targetKey);
+    return {
+      add: turningOn ? [targetKey] : [],
+      remove: turningOn ? [] : [targetKey],
+      // ctrl/cmd keeps the anchor where it was, so a shift-click afterwards
+      // still extends from the start of the run.
+      anchorKey: options.additive ? (anchorKey || targetKey) : targetKey,
+    };
+  }
+
+  function selectableKeysInView() {
+    return state.renderedItems.filter(isDownloadableMedia).map(item => item.selectionKey);
+  }
+
+  function applySelectionGesture(item, event) {
+    if (!isDownloadableMedia(item)) return false;
+    const result = resolveSelectionGesture({
+      orderedKeys: selectableKeysInView(),
+      anchorKey: state.selectionAnchor,
+      targetKey: item.selectionKey,
+      selected: state.selected,
+      range: Boolean(event && event.shiftKey),
+      additive: Boolean(event && (event.ctrlKey || event.metaKey)),
+    });
+    let changed = false;
+    result.add.forEach(key => { if (!state.selected.has(key)) { state.selected.add(key); changed = true; } });
+    result.remove.forEach(key => { if (state.selected.delete(key)) changed = true; });
+    state.selectionAnchor = result.anchorKey;
     if (changed) invalidateVisibleItems({ selection: true });
+    return changed;
   }
 
   function clearSelection() {
+    state.selectionAnchor = null;
     if (!state.selected.size) return false;
     state.selected.clear();
+    // "Selected only" with nothing selected is an empty grid with no visible
+    // cause, so the filter that depended on the selection goes with it.
+    state.selectedOnly = false;
     invalidateVisibleItems({ selection: true });
     return true;
   }
 
-  function exitSelectionMode() {
-    state.selectionMode = false;
-    clearSelection();
-    state.selectedOnly = false;
+  function clearSelectionAndRefresh() {
+    const wasFiltered = state.selectedOnly;
+    const changed = clearSelection();
+    if (wasFiltered) render();
+    else if (changed) updateSelectionUi();
+    return changed;
   }
 
+  // The viewer's S key is a plain toggle, but it still moves the anchor so a
+  // shift-click back in the grid extends from whatever was last touched.
   function toggleSelected(item) {
-    const selected = !state.selected.has(item.selectionKey);
-    setSelected(item, selected);
+    applySelectionGesture(item, null);
     updateSelectionUi();
-    return selected;
+    return state.selected.has(item.selectionKey);
   }
 
   async function copyText(value, successMessage = 'Link copied.') {
@@ -1918,34 +1976,32 @@
     items.filter(isDownloadableMedia).forEach(item => {
       if (!state.selected.has(item.selectionKey)) changed = true;
       state.selected.add(item.selectionKey);
+      state.selectionAnchor = item.selectionKey;
     });
     if (changed) invalidateVisibleItems({ selection: true });
     updateSelectionUi();
   }
 
+  // The dock's selection region is driven by the count, not by a mode flag:
+  // it exists exactly while something is selected.
   function updateSelectionUi() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
-    app.classList.toggle('selecting', state.selectionMode);
-    const selected = selectedMediaItems();
-    const count = selected.length;
+    const count = selectedMediaItems().length;
+    app.classList.toggle('has-selection', count > 0);
     const countNode = app.querySelector('.scg-selected-count');
     const downloadButton = app.querySelector('[data-action="download-selected"]');
-    const clearButton = app.querySelector('[data-action="clear-selection"]');
     if (countNode) countNode.textContent = `${count} selected`;
     if (downloadButton) {
       setIconButton(downloadButton, state.downloading ? 'close' : 'archive', state.downloading ? 'Cancel ZIP queue' : `Download ZIP (${count})`);
       downloadButton.disabled = !count && !state.downloading;
       downloadButton.classList.toggle('cancel-download', state.downloading);
     }
-    if (clearButton) clearButton.disabled = !count;
-    const modeButton = app.querySelector('[data-action="selection-mode"]');
-    if (modeButton) setIconButton(modeButton, state.selectionMode ? 'close' : 'select', state.selectionMode ? 'Exit selection' : `Select media${count ? ` (${count})` : ''}`);
-    const visible = state.renderedItems;
+    app.querySelectorAll('[data-action="clear-selection"]').forEach(button => { button.disabled = !count; });
     app.querySelectorAll('.scg-card[data-key]').forEach(cardNode => {
       const item = itemForNode(cardNode, 'key');
       const checked = Boolean(item && isDownloadableMedia(item) && state.selected.has(item.selectionKey));
-      cardNode.classList.toggle('selected', state.selectionMode && checked);
+      cardNode.classList.toggle('selected', checked);
       const input = cardNode.querySelector('[data-select]');
       if (input) input.checked = checked;
     });
@@ -2835,12 +2891,12 @@
     const key = escapeHtml(item.selectionKey || '');
     const sourceHost = hostOf(item.originalLink || item.url || item.postUrl);
     const meta = `<div class="scg-meta"><span>${escapeHtml(item.author)}</span><a href="${escapeHtml(item.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View post</span></a></div>`;
-    const isSelected = state.selectionMode && state.selected.has(item.selectionKey);
+    const isSelected = state.selected.has(item.selectionKey);
     const downloaded = isMediaItem(item) && wasDownloaded(item);
     const legacyDownload = isMediaItem(item) && hasLegacyDownload(item);
     const historyClass = downloaded ? 'downloaded' : (legacyDownload ? 'download-legacy' : '');
     const selection = isDownloadableMedia(item)
-      ? `<label class="scg-select" title="Select for bulk download"><input type="checkbox" data-select="${key}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
+      ? `<label class="scg-select" title="Select for bulk download. Shift-click extends the range, Ctrl-click adds one."><input type="checkbox" data-select="${key}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
       : '';
     const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : item.type.toUpperCase());
     const historyLabel = downloaded ? 'VERIFIED' : (legacyDownload ? 'LEGACY' : '');
@@ -2964,7 +3020,7 @@
       const collapsed = state.collapsedReplies.has(key);
       const toggleLabel = collapsed ? `Expand ${replyLabel}` : `Collapse ${replyLabel}`;
       const replySelection = replySelectionState(key);
-      const replySelect = state.selectionMode && replySelection.total
+      const replySelect = replySelection.total
         ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
         : '';
       return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header>${replySelect}<button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}<span>${collapsed ? 'Expand' : 'Collapse'}</span></button><div><b>${escapeHtml(replyLabel)}</b><span>${escapeHtml(first.author || 'Unknown')}</span><span>Page ${Number(first.pageNumber || 1)}</span><span>${group.entries.length} item${group.entries.length === 1 ? '' : 's'}</span><span data-reply-selection-count>${replySelection.selected} of ${replySelection.total} downloadable selected</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item)).join('')}</div></section>`;
@@ -3347,7 +3403,6 @@
     }
     const c = counts();
     app.classList.toggle('scanning', state.scanning);
-    app.classList.toggle('selecting', state.selectionMode);
     app.classList.toggle('grouped-replies', state.groupBy === 'reply');
     applyShellState();
     app.querySelectorAll('[data-filter], [data-search], [data-card-scale], .scg-refinebar button, .scg-refinebar select, .scg-viewbar button, .scg-viewbar select, [data-action="selection-mode"], [data-action="page"], [data-action="load-source-page"]').forEach(control => {
@@ -3402,9 +3457,6 @@
       ? `${state.items.length} items indexed · media stays unloaded`
       : `${LAYOUT_LABELS[state.layoutMode]} · ${matched.length} matched · ${state.items.length} indexed · view ${state.viewPage} of ${state.viewPages}`;
     setIconButton(app.querySelector('[data-action="thread"]'), state.scanning ? 'close' : 'scan', state.scanning ? 'Cancel scan' : 'Scan entire thread');
-    setIconButton(app.querySelector('[data-action="selection-mode"]'), state.selectionMode ? 'close' : 'select', state.selectionMode
-      ? 'Exit selection'
-      : `Select media${state.selected.size ? ` (${selectedMediaItems().length})` : ''}`);
     const selectedOnly = app.querySelector('[data-selected-only]');
     selectedOnly.classList.toggle('active', state.selectedOnly);
     selectedOnly.setAttribute('aria-pressed', String(Boolean(state.selectedOnly)));
@@ -3840,7 +3892,7 @@
     state.collapsedReplies.clear();
     state.expandedKeys.clear();
     state.activePlayers.clear();
-    state.selectionMode = false;
+    state.selectionAnchor = null;
     state.selectedOnly = false;
     state.authorFilter = 'all';
     state.hostFilter = 'all';
@@ -4441,6 +4493,7 @@
       background:var(--scg-surface);box-shadow:var(--scg-shadow);
     }
     #${APP_ID} .scg-menu.open{display:flex}
+    #${APP_ID} .scg-menu-up{top:auto;bottom:calc(100% + 8px);left:0;right:auto}
     #${APP_ID} .scg-menu-label{
       padding:7px 9px 5px;color:var(--scg-muted);
       font-size:var(--scg-fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.1em;
@@ -4836,8 +4889,16 @@
     #${APP_ID} .scg-saved-status.visible{display:inline-block}
     #${APP_ID} .scg-saved-status.legacy{background:var(--scg-warn);color:#1c1405}
 
-    #${APP_ID} .scg-select{position:absolute;z-index:8;top:9px;left:9px;display:none;width:30px;height:30px;cursor:pointer}
-    #${APP_ID}.selecting .scg-select{display:block}
+    /* The checkbox is always in the DOM; it fades in when the pointer is near
+       the card, when the card holds focus, and whenever it is already selected.
+       Coarse pointers have no hover, so there it simply stays visible. */
+    #${APP_ID} .scg-select{
+      position:absolute;z-index:8;top:9px;left:9px;display:block;width:30px;height:30px;
+      opacity:0;cursor:pointer;transition:opacity var(--scg-dur-fast) var(--scg-ease);
+    }
+    #${APP_ID} .scg-card:hover .scg-select,
+    #${APP_ID} .scg-card:focus-within .scg-select,
+    #${APP_ID} .scg-card.selected .scg-select{opacity:1}
     #${APP_ID} .scg-select input{position:absolute;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
     #${APP_ID} .scg-select span{
       display:grid;place-items:center;width:30px;height:30px;
@@ -5071,18 +5132,23 @@
     }
     #${APP_ID} .scg-activitybar .scg-primary:hover:not(:disabled) .scg-icon{color:var(--scg-accent-ink)}
 
+    /* Three independent dock regions. Status is permanent; the other two are
+       mounted by what is true, not by a mode the reader has to enter or leave. */
+    #${APP_ID} .scg-select-wrap{flex:none}
     #${APP_ID} .scg-selection-toggle{flex:none}
-    #${APP_ID}.selecting .scg-selection-toggle{
+    #${APP_ID} .scg-selection-toggle[aria-expanded="true"],
+    #${APP_ID}.has-selection .scg-selection-toggle{
       border-color:color-mix(in srgb,var(--scg-accent) 50%,transparent);
       background:var(--scg-accent-soft);color:var(--scg-accent);
     }
-    #${APP_ID}.selecting .scg-selection-toggle .scg-icon{color:var(--scg-accent)}
+    #${APP_ID} .scg-selection-toggle[aria-expanded="true"] .scg-icon,
+    #${APP_ID}.has-selection .scg-selection-toggle .scg-icon{color:var(--scg-accent)}
 
-    #${APP_ID} .scg-bulk-actions{display:none;align-items:center;gap:6px;min-width:0;flex:1}
-    #${APP_ID}.selecting .scg-bulk-actions,
-    #${APP_ID}.downloading .scg-bulk-actions{display:flex}
-    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions{flex:0 0 auto}
-    #${APP_ID}.downloading:not(.selecting) .scg-bulk-actions>*:not([data-action="download-selected"]){display:none}
+    #${APP_ID} .scg-selection-region{display:none;align-items:center;gap:6px;min-width:0;flex:1}
+    #${APP_ID}.has-selection .scg-selection-region,
+    #${APP_ID}.downloading .scg-selection-region{display:flex}
+    #${APP_ID}.downloading:not(.has-selection) .scg-selection-region{flex:0 0 auto}
+    #${APP_ID}.downloading:not(.has-selection) .scg-selection-region>*:not([data-action="download-selected"]){display:none}
     #${APP_ID} .scg-activitybar .cancel-download{
       border-color:color-mix(in srgb,var(--scg-danger) 65%,transparent);
       background:var(--scg-danger-soft);color:var(--scg-danger);
@@ -5092,21 +5158,21 @@
       border-color:var(--scg-danger);background:color-mix(in srgb,var(--scg-danger-soft) 72%,var(--scg-danger));color:#ffffff;
     }
     #${APP_ID} .scg-activitybar .cancel-download:hover:not(:disabled) .scg-icon{color:#ffffff}
-    #${APP_ID} .scg-bulk-label{
-      flex:none;color:var(--scg-muted);
-      font-size:var(--scg-fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.1em;
-    }
     #${APP_ID} .scg-selected-count{
-      flex:none;margin-left:auto;padding:0 4px;
+      flex:none;margin-right:auto;padding:0 4px;
       color:var(--scg-text);font-size:var(--scg-fs-sm);font-weight:600;font-variant-numeric:tabular-nums;
     }
-    #${APP_ID}.selecting .scg-activity-state{flex:0 0 auto}
-    #${APP_ID}.selecting .scg-activity-state>div{display:none}
+    #${APP_ID}.has-selection .scg-activity-state{flex:0 0 auto}
+    #${APP_ID}.has-selection .scg-activity-state>div{display:none}
 
-    #${APP_ID} .scg-progress{position:relative;display:flex;min-width:220px;max-width:440px;flex:1 1 300px}
-    #${APP_ID}.selecting .scg-progress{display:none}
-    #${APP_ID}.selecting.has-downloads .scg-progress,
-    #${APP_ID}.selecting.downloading .scg-progress{display:flex;min-width:150px;max-width:320px;flex:1 1 220px}
+    /* The transfer region exists only while there is a transfer. An idle
+       progress bar was reporting nothing at the cost of a permanent third of
+       the dock. */
+    #${APP_ID} .scg-progress{position:relative;display:none;min-width:220px;max-width:440px;flex:1 1 300px}
+    #${APP_ID}.has-downloads .scg-progress,
+    #${APP_ID}.downloading .scg-progress{display:flex}
+    #${APP_ID}.has-selection.has-downloads .scg-progress,
+    #${APP_ID}.has-selection.downloading .scg-progress{min-width:150px;max-width:320px;flex:1 1 220px}
     #${APP_ID} .scg-progress-summary{
       display:flex !important;align-items:center;gap:10px;width:100%;min-width:0;
       min-height:40px;padding:8px 12px !important;
@@ -5331,11 +5397,11 @@
       background:var(--scg-surface);color:var(--scg-text-soft);font-size:var(--scg-fs-xs);cursor:pointer;
     }
     #${APP_ID} .scg-reply-select{
-      display:none;align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
+      align-items:center;gap:6px;flex:none;min-height:30px;padding:5px 8px;
       border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);
       background:var(--scg-surface);color:var(--scg-text-soft);font-size:var(--scg-fs-xs);cursor:pointer;
     }
-    #${APP_ID}.selecting .scg-reply-select{display:inline-flex}
+    #${APP_ID} .scg-reply-select{display:inline-flex}
     #${APP_ID} .scg-reply-select input{width:16px;height:16px;margin:0;accent-color:var(--scg-accent);cursor:pointer}
     #${APP_ID} .scg-reply-select .scg-icon{color:var(--scg-accent)}
     #${APP_ID} .scg-reply-toggle:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
@@ -5773,11 +5839,12 @@
       #${APP_ID} .scg-progress{flex:1 1 100%;min-width:0;max-width:none}
       #${APP_ID} .scg-progress-text{max-width:130px}
       #${APP_ID} .scg-selection-toggle>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions,
-      #${APP_ID}.downloading .scg-bulk-actions{flex-wrap:wrap;flex-basis:100%}
-      #${APP_ID}.selecting .scg-bulk-actions button>span{display:none}
-      #${APP_ID}.selecting .scg-bulk-actions .scg-primary>span,
-      #${APP_ID}.downloading .scg-bulk-actions .scg-primary>span{display:inline}
+      #${APP_ID}.has-selection .scg-selection-region,
+      #${APP_ID}.downloading .scg-selection-region{flex-wrap:wrap;flex-basis:100%}
+      #${APP_ID}.has-selection .scg-selection-region button>span{display:none}
+      #${APP_ID}.has-selection .scg-selection-region .scg-primary>span,
+      #${APP_ID}.downloading .scg-selection-region .scg-primary>span{display:inline}
+      #${APP_ID} .scg-menu-up{left:auto;right:0}
       #${APP_ID} .scg-download-popover{position:fixed;right:8px;left:8px;bottom:76px;width:auto;max-height:62vh}
       #${APP_ID} .scg-download-job>div:first-child{align-items:flex-start;flex-direction:column;gap:3px}
       #${APP_ID} .scg-diag-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -5831,6 +5898,7 @@
       #${APP_ID} .scg-view-pagination button,
       #${APP_ID} .scg-viewer-tools button{min-width:44px}
       #${APP_ID} .scg-select,#${APP_ID} .scg-select span{width:36px;height:36px}
+      #${APP_ID} .scg-select{opacity:1}
       #${APP_ID} .scg-viewer-thumb{min-height:0}
       #${APP_ID} [data-tooltip]:hover:after{display:none}
       #${APP_ID} .scg-scan-warning{
@@ -5974,14 +6042,20 @@
       <main class="scg-scroll" tabindex="-1"><div class="scg-grid"></div></main>
       <footer class="scg-bulkbar scg-activitybar scg-glass" aria-label="Activity, selection and downloads">
         <div class="scg-activity-state"><i aria-hidden="true"></i><div><b class="scg-status">Ready</b><span data-activity-detail>Open a page or scan the thread</span></div></div>
-        <button class="scg-selection-toggle scg-tip-up" data-action="selection-mode" data-tooltip="Turn selection mode on or off">${iconWell('select')}<span>Select media</span></button>
-        <div class="scg-bulk-actions" role="group" aria-label="Bulk selection">
-          <span class="scg-bulk-label" aria-hidden="true">Select</span>
-          <button class="scg-tip-up" data-action="select-visible" data-tooltip="Select every media item in this view">${iconWell('select')}<span>Visible</span></button>
-          <button class="scg-tip-up" data-action="select-images" data-tooltip="Select all indexed images">${iconWell('image')}<span>Images</span></button>
-          <button class="scg-tip-up" data-action="select-videos" data-tooltip="Select all indexed videos">${iconWell('video')}<span>Videos</span></button>
-          <button class="scg-tip-up" data-action="clear-selection" data-tooltip="Clear the selection" disabled>${iconWell('clear')}<span>Clear</span></button>
+        <span class="scg-menu-wrap scg-select-wrap">
+          <button class="scg-selection-toggle scg-tip-up" data-action="select-menu" data-tooltip="Bulk selection" aria-haspopup="true" aria-expanded="false" aria-controls="scg-tl-select-menu">${iconWell('select')}<span>Select</span></button>
+          <div class="scg-menu scg-menu-up" id="scg-tl-select-menu" role="menu" aria-label="Bulk selection">
+            <div class="scg-menu-label" role="presentation">Select</div>
+            <button data-action="select-visible" role="menuitem">${iconWell('select')}<span>Everything in this view (A)</span></button>
+            <button data-action="select-images" role="menuitem">${iconWell('image')}<span>All indexed images</span></button>
+            <button data-action="select-videos" role="menuitem">${iconWell('video')}<span>All indexed videos</span></button>
+            <div class="scg-menu-sep" role="separator"></div>
+            <button data-action="clear-selection" role="menuitem" disabled>${iconWell('clear')}<span>Clear selection (Esc)</span></button>
+          </div>
+        </span>
+        <div class="scg-selection-region" role="group" aria-label="Current selection">
           <span class="scg-selected-count" role="status" aria-live="polite">0 selected</span>
+          <button class="scg-tip-up" data-action="clear-selection" data-tooltip="Clear the selection" disabled>${iconWell('clear')}<span>Clear</span></button>
           <button class="scg-primary scg-tip-up scg-tip-end" data-action="download-selected" disabled>${iconWell('archive', 'scg-icon-well-primary')}<span>Download ZIP (0)</span></button>
         </div>
         <div class="scg-progress">
@@ -6090,14 +6164,6 @@
       sort: 'thread-asc', groupBy: 'none', viewPage: 1,
     }, { persist: true });
   };
-  app.querySelector('[data-action="selection-mode"]').onclick = () => {
-    if (state.selectionMode) {
-      exitSelectionMode();
-    } else {
-      state.selectionMode = true;
-    }
-    commitState({}, { render: true });
-  };
   app.querySelector('[data-action="filters-toggle"]').onclick = () => {
     commitState({ filtersCollapsed: !state.filtersCollapsed }, { persist: true, shellOnly: true });
   };
@@ -6115,6 +6181,12 @@
   const overflowMenu = app.querySelector('.scg-menu');
   const refineTrigger = app.querySelector('[data-action="refine-toggle"]');
   const refinePopover = app.querySelector('.scg-refine-popover');
+  const selectTrigger = app.querySelector('[data-action="select-menu"]');
+  const selectMenu = app.querySelector('.scg-menu-up');
+  selectTrigger.onclick = event => {
+    event.stopPropagation();
+    toggleDisclosure(selectTrigger, selectMenu);
+  };
   overflowTrigger.onclick = event => {
     event.stopPropagation();
     toggleDisclosure(overflowTrigger, overflowMenu);
@@ -6128,7 +6200,7 @@
     if (event.target.closest?.('.scg-menu-wrap, .scg-refine-wrap')) return;
     closeDisclosures();
   }, true);
-  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search · L cycles layout · Shift+A selects this view · Shift+G opens or closes · Esc closes. Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.', 11000);
+  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search · L cycles layout · A selects this view · click a checkbox to select, shift-click to extend, ctrl-click to add · Shift+G opens or closes · Esc clears the selection, then closes. Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.', 11000);
   app.querySelector('[data-action="shortcuts"]').addEventListener('click', () => closeDisclosures());
   app.querySelector('[data-action="settings"]').onclick = () => {
     closeDisclosures();
@@ -6189,14 +6261,20 @@
   app.querySelector('[data-action="reset-everything"]').onclick = async () => {
     if (await confirmAction({ title: 'Reset everything?', message: 'Preferences and SAVED markers will be removed. Existing downloaded files will not be deleted.', confirmLabel: 'Reset everything', danger: true })) resetPreferences(true);
   };
-  app.querySelector('[data-action="select-visible"]').onclick = () => selectItems(mediaItems());
-  app.querySelector('[data-action="select-images"]').onclick = () => selectItems(state.items.filter(item => item.type === 'image'));
-  app.querySelector('[data-action="select-videos"]').onclick = () => selectItems(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
-  app.querySelector('[data-action="clear-selection"]').onclick = () => {
-    clearSelection();
+  const bulkSelect = items => {
+    closeDisclosures();
+    selectItems(items);
     if (state.selectedOnly) render();
-    else updateSelectionUi();
   };
+  app.querySelector('[data-action="select-visible"]').onclick = () => bulkSelect(mediaItems());
+  app.querySelector('[data-action="select-images"]').onclick = () => bulkSelect(state.items.filter(item => item.type === 'image'));
+  app.querySelector('[data-action="select-videos"]').onclick = () => bulkSelect(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
+  app.querySelectorAll('[data-action="clear-selection"]').forEach(button => {
+    button.onclick = () => {
+      closeDisclosures();
+      clearSelectionAndRefresh();
+    };
+  });
   app.querySelector('[data-action="download-selected"]').onclick = controllers.downloads.bulk;
   app.querySelector('[data-action="download-details"]').onclick = event => {
     event.stopPropagation();
@@ -6260,8 +6338,10 @@
     }
     const selection = event.target.closest('[data-select]');
     if (selection) {
-      const item = itemForNode(selection, 'select');
-      setSelected(item, selection.checked);
+      // The browser has already flipped the checkbox by the time this runs;
+      // updateSelectionUi rewrites every box from state, so a shift-click that
+      // means something other than "toggle me" still lands correctly.
+      applySelectionGesture(itemForNode(selection, 'select'), event);
       if (state.selectedOnly) render();
       else updateSelectionUi();
       return;
@@ -6371,18 +6451,21 @@
       }
       return;
     }
-    if (event.key === 'Escape' && app.classList.contains('open')) closeApp();
-    else if (event.key === '/' && app.classList.contains('open')) {
+    if (event.key === 'Escape' && app.classList.contains('open')) {
+      // Escape unwinds one layer at a time: a selection first, the gallery only
+      // once there is nothing left to discard.
+      if (state.selected.size) clearSelectionAndRefresh();
+      else closeApp();
+    } else if (event.key === '/' && app.classList.contains('open')) {
       event.preventDefault();
       app.querySelector('[data-search]').focus();
     } else if (!event.shiftKey && event.key.toLowerCase() === 'l' && app.classList.contains('open')) {
       event.preventDefault();
       cycleLayoutMode(1, true);
-    } else if (event.shiftKey && event.key.toLowerCase() === 'a' && app.classList.contains('open')) {
+    } else if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a' && app.classList.contains('open')) {
       event.preventDefault();
-      state.selectionMode = true;
       selectItems(mediaItems());
-      render();
+      if (state.selectedOnly) render();
     } else if (event.shiftKey && event.key.toLowerCase() === 'g') {
       event.preventDefault();
       if (app.classList.contains('open')) closeApp();

@@ -15,6 +15,10 @@ function metadataValue(key) {
   return source.match(new RegExp(`^// @${key}\\s+(.+)$`, 'm'))?.[1].trim() || '';
 }
 
+// vm sandboxes have their own Object.prototype, so deepStrictEqual rejects
+// anything that crosses back out. A JSON round-trip re-homes it.
+const plain = value => JSON.parse(JSON.stringify(value));
+
 function evaluateSlice(startMarker, endMarker, names, context = {}) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start);
@@ -338,27 +342,83 @@ test('reply selection works while collapsed and spans all indexed reply items', 
   assert.equal(state.collapsedReplies.has('large-reply'), true);
 });
 
-test('exit selection clears every selection without canceling an active download', () => {
+test('selection gestures toggle, extend and add without a mode', () => {
+  const { selectionRangeKeys, resolveSelectionGesture } = evaluateSlice(
+    'function selectionRangeKeys',
+    'function selectableKeysInView',
+    ['selectionRangeKeys', 'resolveSelectionGesture'],
+  );
+  const keys = ['a', 'b', 'c', 'd', 'e'];
+
+  // A range is inclusive and reads the same in either direction.
+  assert.deepEqual(plain(selectionRangeKeys(keys, 'b', 'd')), ['b', 'c', 'd']);
+  assert.deepEqual(plain(selectionRangeKeys(keys, 'd', 'b')), ['b', 'c', 'd']);
+  // No anchor yet, or an anchor that a filter change has taken out of the view:
+  // the shift-click degrades to selecting just the card that was clicked.
+  assert.deepEqual(plain(selectionRangeKeys(keys, null, 'c')), ['c']);
+  assert.deepEqual(plain(selectionRangeKeys(keys, 'gone', 'c')), ['c']);
+  assert.deepEqual(plain(selectionRangeKeys(keys, 'b', 'gone')), []);
+
+  // A plain click toggles, and moves the anchor to where it landed.
+  assert.deepEqual(
+    plain(resolveSelectionGesture({ orderedKeys: keys, anchorKey: 'a', targetKey: 'c', selected: new Set() })),
+    { add: ['c'], remove: [], anchorKey: 'c' },
+  );
+  assert.deepEqual(
+    plain(resolveSelectionGesture({ orderedKeys: keys, anchorKey: 'a', targetKey: 'c', selected: new Set(['c']) })),
+    { add: [], remove: ['c'], anchorKey: 'c' },
+  );
+
+  // Ctrl/cmd toggles but leaves the anchor, so a shift-click afterwards still
+  // spans from the start of the run rather than from the last stray click.
+  assert.equal(resolveSelectionGesture({
+    orderedKeys: keys, anchorKey: 'a', targetKey: 'c', selected: new Set(), additive: true,
+  }).anchorKey, 'a');
+
+  // Shift only ever selects: sweeping back across ground it already covered
+  // must not punch holes in the range.
+  assert.deepEqual(
+    plain(resolveSelectionGesture({
+      orderedKeys: keys, anchorKey: 'b', targetKey: 'd', selected: new Set(['b', 'c', 'd']), range: true,
+    })),
+    { add: ['b', 'c', 'd'], remove: [], anchorKey: 'b' },
+  );
+});
+
+test('clearing the selection drops the anchor and its filter, not an active download', () => {
   const state = {
-    selectionMode: true,
     selectedOnly: true,
     selected: new Set(['a', 'b', 'c']),
+    selectionAnchor: 'b',
     downloading: true,
     cancelDownload: false,
   };
-  const { exitSelectionMode } = evaluateSlice(
+  const { clearSelection } = evaluateSlice(
     'function clearSelection',
-    'function toggleSelected',
-    ['exitSelectionMode'],
+    'function clearSelectionAndRefresh',
+    ['clearSelection'],
     { state, invalidateVisibleItems: () => {} },
   );
 
-  exitSelectionMode();
-  assert.equal(state.selectionMode, false);
-  assert.equal(state.selectedOnly, false);
+  assert.equal(clearSelection(), true);
   assert.equal(state.selected.size, 0);
+  assert.equal(state.selectionAnchor, null);
+  // Otherwise the grid empties with nothing on screen explaining why.
+  assert.equal(state.selectedOnly, false);
+  assert.equal(clearSelection(), false);
   assert.equal(state.downloading, true);
   assert.equal(state.cancelDownload, false);
+});
+
+test('a card checkbox routes through the gesture rather than its own checked state', () => {
+  assert.doesNotMatch(source, /selectionMode|exitSelectionMode|setSelected\(/);
+  assert.match(source, /applySelectionGesture\(itemForNode\(selection, 'select'\), event\)/);
+  assert.match(source, /range: Boolean\(event && event\.shiftKey\)/);
+  assert.match(source, /additive: Boolean\(event && \(event\.ctrlKey \|\| event\.metaKey\)\)/);
+  // The checkbox is mounted on every downloadable card and merely revealed.
+  assert.match(source, /\.scg-card:hover \.scg-select/);
+  assert.match(source, /\.scg-card\.selected \.scg-select\{opacity:1\}/);
+  assert.doesNotMatch(source, /\.selecting \.scg-select/);
 });
 
 test('clearing download history removes persisted markers and completed queue rows', () => {
@@ -417,10 +477,17 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /selectedMatch = !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
 });
 
-test('dock preserves active queue status and cancellation across selection states', () => {
-  assert.match(source, /\.selecting\.has-downloads \.scg-progress/);
-  assert.match(source, /\.selecting\.downloading \.scg-progress/);
-  assert.match(source, /\.downloading \.scg-bulk-actions\{display:flex\}/);
+test('dock mounts its three regions from what is true, not from a mode', () => {
+  // Selection region: present exactly while something is selected.
+  assert.match(source, /classList\.toggle\('has-selection', count > 0\)/);
+  assert.match(source, /\.has-selection \.scg-selection-region,/);
+  // Transfer region: present exactly while a transfer exists.
+  assert.match(source, /\.scg-progress\{position:relative;display:none/);
+  assert.match(source, /\.has-downloads \.scg-progress,/);
+  assert.match(source, /\.has-selection\.has-downloads \.scg-progress,/);
+  assert.match(source, /\.has-selection\.downloading \.scg-progress/);
+  // An active queue keeps its cancel affordance even with nothing selected.
+  assert.match(source, /\.downloading \.scg-selection-region\{display:flex\}/);
   assert.match(source, /classList\.toggle\('cancel-download', state\.downloading\)/);
   assert.match(source, /state\.downloading \? 'Cancel ZIP queue'/);
 });
@@ -667,7 +734,6 @@ test('the reply index is rebuilt per render and dropped only when eligibility ca
 test('aspect ratios are clamped, hinted, averaged and evicted', () => {
   // The slice runs in a vm sandbox, so its objects carry a different
   // Object.prototype and deepStrictEqual rejects them. Compare plain data.
-  const plain = value => JSON.parse(JSON.stringify(value));
   const { clampRatio, parseDimensionHints, geometricMeanRatio, mergeRatioCache } = evaluateSlice(
     'function clampRatio',
     'const RATIO_SOURCE_RANK',
