@@ -30,6 +30,21 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
   return sandbox.__tested;
 }
 
+test('the stylesheet literal carries no stray template delimiters', () => {
+  const opener = 'style.textContent = `';
+  const start = source.indexOf(opener);
+  assert.notEqual(start, -1);
+  const end = source.indexOf('document.head.appendChild(style)', start);
+  const body = source.slice(start + opener.length, source.lastIndexOf('`;', end));
+
+  // A backtick anywhere in here silently ends the template and turns whatever
+  // follows into a tagged-template call. That is valid syntax, so node --check
+  // passes and the whole script dies on load with no launcher and no clue.
+  assert.equal(body.includes('`'), false, 'a backtick inside the CSS literal ends it early');
+  // And the one interpolation that has to survive still does.
+  assert.ok(body.includes('#${APP_ID}'));
+});
+
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');

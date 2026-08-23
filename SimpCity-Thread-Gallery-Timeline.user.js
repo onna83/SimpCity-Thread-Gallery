@@ -64,6 +64,14 @@
   const LEGACY_THEME_ACCENTS = Object.freeze({ midnight: 'indigo', graphite: 'amber' });
   // 0 is "All": one view, no paging. Kept in the same list so every existing
   // validation of a stored perPage keeps working unchanged.
+  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'timeline', 'grid', 'feed']);
+  const LAYOUT_LABELS = Object.freeze({
+    masonry: 'Masonry', flow: 'Flow', timeline: 'Timeline', grid: 'Uniform grid', feed: 'Feed',
+  });
+  // Two windowed layouts over one engine: flow packs columns, timeline
+  // justifies rows. CSS multi-column masonry stays the default until they
+  // prove out. Both preserve aspect ratio; they differ in which axis varies.
+  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow', 'timeline']);
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
   const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
@@ -513,14 +521,6 @@
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
   const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
-  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'timeline', 'grid', 'feed']);
-  const LAYOUT_LABELS = Object.freeze({
-    masonry: 'Masonry', flow: 'Flow', timeline: 'Timeline', grid: 'Uniform grid', feed: 'Feed',
-  });
-  // Two windowed layouts over one engine: flow packs columns, timeline
-  // justifies rows. CSS multi-column masonry stays the default until they
-  // prove out. Both preserve aspect ratio; they differ in which axis varies.
-  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow', 'timeline']);
   const ICON_PATHS = {
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
     settings: '<circle cx="12" cy="12" r="3.1"/><path d="M19.35 13.4a1.55 1.55 0 0 0 .32 1.72l.05.06a1.85 1.85 0 1 1-2.62 2.62l-.06-.06a1.55 1.55 0 0 0-1.72-.31 1.55 1.55 0 0 0-.94 1.42v.17a1.85 1.85 0 1 1-3.7 0v-.09a1.55 1.55 0 0 0-1-1.42 1.55 1.55 0 0 0-1.72.31l-.06.06a1.85 1.85 0 1 1-2.62-2.62l.06-.06a1.55 1.55 0 0 0 .31-1.72 1.55 1.55 0 0 0-1.42-.94h-.17a1.85 1.85 0 1 1 0-3.7h.09a1.55 1.55 0 0 0 1.42-1 1.55 1.55 0 0 0-.31-1.72l-.06-.06a1.85 1.85 0 1 1 2.62-2.62l.06.06a1.55 1.55 0 0 0 1.72.31h.07a1.55 1.55 0 0 0 .94-1.42v-.17a1.85 1.85 0 1 1 3.7 0v.09a1.55 1.55 0 0 0 .94 1.42 1.55 1.55 0 0 0 1.72-.31l.06-.06a1.85 1.85 0 1 1 2.62 2.62l-.06.06a1.55 1.55 0 0 0-.31 1.72v.07a1.55 1.55 0 0 0 1.42.94h.17a1.85 1.85 0 1 1 0 3.7h-.09a1.55 1.55 0 0 0-1.42.94Z"/>',
@@ -4899,8 +4899,9 @@
 
     /* Layouts: flow and timeline, both windowed. The grid becomes a spacer of
        known height and every card is placed absolutely, so only what is near
-       the viewport is ever in the DOM. These rules key off `.flowing` rather
-       than a layout name, because both windowed layouts want all of them. */
+       the viewport is ever in the DOM. These rules key off the flowing class
+       rather than a layout name, because both windowed layouts want all of
+       them. */
     #${APP_ID} .scg-grid.flowing{
       position:relative;display:block;columns:auto;
     }
