@@ -62,7 +62,10 @@
   // Indigo and Graphite were whole themes that only differed from Darkroom by
   // hue. They survive as accents on the dark theme.
   const LEGACY_THEME_ACCENTS = Object.freeze({ midnight: 'indigo', graphite: 'amber' });
-  const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500]);
+  // 0 is "All": one view, no paging. Kept in the same list so every existing
+  // validation of a stored perPage keeps working unchanged.
+  const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
+  const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
   const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
   const SORT_LABELS = Object.freeze({
     'thread-asc': 'Oldest replies first',
@@ -510,11 +513,14 @@
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
   const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
-  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'grid', 'feed']);
-  const LAYOUT_LABELS = Object.freeze({ masonry: 'Masonry', flow: 'Flow', grid: 'Uniform grid', feed: 'Feed' });
-  // Flow is masonry positioned in JS and rendered through a window. CSS
-  // multi-column masonry stays as the default until this proves out.
-  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow']);
+  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'timeline', 'grid', 'feed']);
+  const LAYOUT_LABELS = Object.freeze({
+    masonry: 'Masonry', flow: 'Flow', timeline: 'Timeline', grid: 'Uniform grid', feed: 'Feed',
+  });
+  // Two windowed layouts over one engine: flow packs columns, timeline
+  // justifies rows. CSS multi-column masonry stays the default until they
+  // prove out. Both preserve aspect ratio; they differ in which axis varies.
+  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow', 'timeline']);
   const ICON_PATHS = {
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
     settings: '<circle cx="12" cy="12" r="3.1"/><path d="M19.35 13.4a1.55 1.55 0 0 0 .32 1.72l.05.06a1.85 1.85 0 1 1-2.62 2.62l-.06-.06a1.55 1.55 0 0 0-1.72-.31 1.55 1.55 0 0 0-.94 1.42v.17a1.85 1.85 0 1 1-3.7 0v-.09a1.55 1.55 0 0 0-1-1.42 1.55 1.55 0 0 0-1.72.31l-.06.06a1.85 1.85 0 1 1-2.62-2.62l.06-.06a1.55 1.55 0 0 0 .31-1.72 1.55 1.55 0 0 0-1.42-.94h-.17a1.85 1.85 0 1 1 0-3.7h.09a1.55 1.55 0 0 0 1.42-1 1.55 1.55 0 0 0-.31-1.72l-.06-.06a1.85 1.85 0 1 1 2.62-2.62l.06.06a1.55 1.55 0 0 0 1.72.31h.07a1.55 1.55 0 0 0 .94-1.42v-.17a1.85 1.85 0 1 1 3.7 0v.09a1.55 1.55 0 0 0 .94 1.42 1.55 1.55 0 0 0 1.72-.31l.06-.06a1.85 1.85 0 1 1 2.62 2.62l-.06.06a1.55 1.55 0 0 0-.31 1.72v.07a1.55 1.55 0 0 0 1.42.94h.17a1.85 1.85 0 1 1 0 3.7h-.09a1.55 1.55 0 0 0-1.42.94Z"/>',
@@ -539,6 +545,7 @@
     scan: '<path d="M3.75 8V5.75a2 2 0 0 1 2-2H8M16 3.75h2.25a2 2 0 0 1 2 2V8M20.25 16v2.25a2 2 0 0 1-2 2H16M8 20.25H5.75a2 2 0 0 1-2-2V16"/><path d="M7.5 12h9"/>',
     masonry: '<rect x="3.5" y="3.5" width="7" height="10.25" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="6" rx="1.6"/><rect x="3.5" y="16" width="7" height="4.5" rx="1.6"/><rect x="13.5" y="11.75" width="7" height="8.75" rx="1.6"/>',
     grid: '<rect x="3.5" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="3.5" y="13.25" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="13.25" width="7.25" height="7.25" rx="1.6"/>',
+    timeline: '<rect x="3.5" y="4.75" width="8.75" height="6" rx="1.5"/><rect x="13.75" y="4.75" width="6.75" height="6" rx="1.5"/><rect x="3.5" y="13.25" width="5.75" height="6" rx="1.5"/><rect x="10.75" y="13.25" width="9.75" height="6" rx="1.5"/>',
     feed: '<rect x="3.5" y="4.25" width="6.75" height="6" rx="1.5"/><path d="M13 6h7.5M13 8.9h5.25"/><rect x="3.5" y="13.75" width="6.75" height="6" rx="1.5"/><path d="M13 15.5h7.5M13 18.4h5.25"/>',
     zoomIn: '<circle cx="10.75" cy="10.75" r="6.5"/><path d="m15.6 15.6 4.65 4.65M10.75 7.9v5.7M7.9 10.75h5.7"/>',
     zoomOut: '<circle cx="10.75" cy="10.75" r="6.5"/><path d="m15.6 15.6 4.65 4.65M7.9 10.75h5.7"/>',
@@ -2826,8 +2833,8 @@
   }
 
   function buildViewPages(items) {
-    const limit = state.perPage;
     if (!items.length) return [[]];
+    const limit = Number(state.perPage) > 0 ? Number(state.perPage) : items.length;
     if (state.groupBy !== 'reply') {
       const pages = [];
       for (let index = 0; index < items.length; index += limit) pages.push(items.slice(index, index + limit));
@@ -3125,6 +3132,9 @@
     const pageSelect = app.querySelector('[data-view-page]');
     const options = Array.from({ length: state.viewPages }, (_, index) => ({ value: String(index + 1), label: `View ${index + 1}` }));
     setSelectOptions(pageSelect, options, state.viewPage);
+    // Paging is a consequence of the page size, not a thing to browse with. It
+    // shows up only when there is somewhere else to go.
+    app.querySelector('.scg-view-pagination').hidden = state.viewPages <= 1;
     app.querySelector('[data-action="view-prev"]').disabled = state.scanning || state.viewPage <= 1;
     app.querySelector('[data-action="view-next"]').disabled = state.scanning || state.viewPage >= state.viewPages;
     pageSelect.disabled = state.scanning;
@@ -3287,11 +3297,13 @@
     });
   }
 
-  /* ---- Flow: computed masonry with a windowed renderer ---------------------
+  /* ---- The windowed renderer -----------------------------------------------
      CSS multi-column cannot be virtualized -- the browser must see every box to
-     balance the columns -- so this mode positions cards itself and mounts only
-     the ones near the viewport. Pagination is bypassed here: the whole filtered
-     set is laid out and the window does the limiting.
+     balance the columns -- so these modes position cards themselves and mount
+     only the ones near the viewport. Flow packs columns and timeline justifies
+     rows; both emit the same cell model, so everything below serves both.
+     Pagination is bypassed here: the whole filtered set is laid out and the
+     window does the limiting.
      ------------------------------------------------------------------------ */
 
   const FLOW_OVERSCAN = 900;
@@ -3306,9 +3318,13 @@
     width: 0,
   };
 
+  function isWindowedLayout() {
+    return VIRTUALIZED_LAYOUTS.includes(state.layoutMode);
+  }
+
   function flowGrid() {
     const app = document.getElementById(APP_ID);
-    return app && state.layoutMode === 'flow' ? app.querySelector('.scg-grid') : null;
+    return app && isWindowedLayout() ? app.querySelector('.scg-grid') : null;
   }
 
   function flowScrollArea() {
@@ -3318,10 +3334,24 @@
 
   function flowLayoutOptions(containerWidth) {
     const scale = Math.min(160, Math.max(70, Number(state.cardScale) || 100)) / 100;
+    const gap = state.compact ? 10 : 14;
+    if (state.layoutMode === 'timeline') {
+      // The size slider drives row height here rather than column width: in a
+      // justified layout that is the axis the reader is choosing.
+      const targetHeight = Math.round((state.compact ? 180 : 250) * scale);
+      return {
+        containerWidth,
+        gap,
+        targetHeight,
+        maxRowHeight: Math.round(targetHeight * 1.6),
+        chromeHeight: FLOW_CHROME,
+        assumedRatio: assumedRatio(),
+      };
+    }
     return {
       containerWidth,
       columnWidth: Math.round((state.compact ? 195 : 280) * scale),
-      gap: state.compact ? 10 : 14,
+      gap,
       chromeHeight: FLOW_CHROME,
       assumedRatio: assumedRatio(),
     };
@@ -3329,7 +3359,9 @@
 
   function buildFlowModel(containerWidth) {
     const entries = state.renderedItems.map(item => ({ key: item.selectionKey, ratio: itemRatio(item) }));
-    const packed = packColumns(entries, flowLayoutOptions(containerWidth));
+    const options = flowLayoutOptions(containerWidth);
+    const timeline = state.layoutMode === 'timeline';
+    const packed = timeline ? justifyRows(entries, options) : packColumns(entries, options);
     const byKey = new Map();
     let maxCellHeight = 0;
     packed.cells.forEach(cell => {
@@ -3337,9 +3369,17 @@
       if (cell.height > maxCellHeight) maxCellHeight = cell.height;
     });
     // visibleRowRange binary-searches on y, so the index it walks must be
-    // sorted by y. Column packing emits in item order, which is not.
-    const ordered = packed.cells.slice().sort((a, b) => a.y - b.y || a.x - b.x);
-    return { cells: ordered, byKey, height: packed.height, columns: packed.columns, maxCellHeight, width: containerWidth };
+    // sorted by y. justifyRows already emits row by row; packColumns emits in
+    // item order, which is not.
+    const ordered = timeline ? packed.cells : packed.cells.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+    return {
+      cells: ordered,
+      byKey,
+      height: packed.height,
+      columns: packed.columns || 0,
+      maxCellHeight,
+      width: containerWidth,
+    };
   }
 
   function positionFlowCard(node, cell) {
@@ -3438,7 +3478,7 @@
   }
 
   function scheduleFlowLayout() {
-    if (flow.frame || state.layoutMode !== 'flow') return;
+    if (flow.frame || !isWindowedLayout()) return;
     flow.frame = requestAnimationFrame(() => {
       flow.frame = 0;
       relayoutFlow();
@@ -3446,7 +3486,7 @@
   }
 
   function scheduleFlowWindow() {
-    if (flow.frame || state.layoutMode !== 'flow') return;
+    if (flow.frame || !isWindowedLayout()) return;
     flow.frame = requestAnimationFrame(() => {
       flow.frame = 0;
       updateFlowWindow();
@@ -3470,7 +3510,7 @@
     const grid = app && app.querySelector('.scg-grid');
     if (!grid) return;
     flow.resizeObserver = new ResizeObserver(() => {
-      if (state.layoutMode !== 'flow') return;
+      if (!isWindowedLayout()) return;
       // Height changes come from our own re-packing; only width matters.
       if (grid.clientWidth === flow.width) return;
       scheduleFlowLayout();
@@ -4720,6 +4760,7 @@
       display:inline-flex;align-items:center;gap:3px;flex:none;
       padding:3px;border:1px solid var(--scg-line);border-radius:13px;background:var(--scg-surface-2);
     }
+    #${APP_ID} .scg-view-pagination[hidden]{display:none}
     #${APP_ID} .scg-view-pagination button{
       display:inline-grid;place-items:center;
       min-width:32px;min-height:32px;padding:6px;
@@ -4729,7 +4770,6 @@
     #${APP_ID} .scg-view-pagination button:hover:not(:disabled){background:var(--scg-surface-3);color:var(--scg-text)}
     #${APP_ID} .scg-view-pagination button>span{display:none}
     #${APP_ID} .scg-view-pagination select{min-height:32px;min-width:92px;border-color:transparent;background-color:transparent}
-    #${APP_ID} .scg-viewbar [data-page-size]{min-width:74px}
     #${APP_ID} .scg-size-control{gap:8px;min-width:178px}
     #${APP_ID} .scg-size-control>span{white-space:nowrap}
     #${APP_ID} [data-card-scale]{
@@ -4857,13 +4897,14 @@
     #${APP_ID}[data-layout="masonry"].compact .scg-card,
     #${APP_ID}[data-layout="masonry"].compact .scg-skeleton{margin-bottom:10px}
 
-    /* Layout: flow (computed masonry, windowed). The grid becomes a spacer of
+    /* Layouts: flow and timeline, both windowed. The grid becomes a spacer of
        known height and every card is placed absolutely, so only what is near
-       the viewport is ever in the DOM. */
-    #${APP_ID}[data-layout="flow"] .scg-grid.flowing{
+       the viewport is ever in the DOM. These rules key off `.flowing` rather
+       than a layout name, because both windowed layouts want all of them. */
+    #${APP_ID} .scg-grid.flowing{
       position:relative;display:block;columns:auto;
     }
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell{
+    #${APP_ID} .scg-flow-cell{
       position:absolute;margin:0;
       display:flex;flex-direction:column;
       contain:layout paint style;
@@ -4871,24 +4912,40 @@
     /* The media area absorbs the difference between the estimated chrome height
        and the real one, so a slightly wrong estimate shows a little more or less
        image rather than clipping the controls. */
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-preview,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell>video,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-embed,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-host{
+    #${APP_ID} .scg-flow-cell .scg-preview,
+    #${APP_ID} .scg-flow-cell>video,
+    #${APP_ID} .scg-flow-cell .scg-embed,
+    #${APP_ID} .scg-flow-cell .scg-host{
       flex:1;min-height:0;
     }
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-preview img,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell>video{
+    #${APP_ID} .scg-flow-cell .scg-preview img,
+    #${APP_ID} .scg-flow-cell>video{
       width:100%;height:100%;max-height:none;aspect-ratio:auto;object-fit:cover;
     }
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-embed{aspect-ratio:auto}
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-textcard p,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell>p{min-height:0;flex:1}
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-actions,
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell .scg-meta{flex:none}
+    #${APP_ID} .scg-flow-cell .scg-embed{aspect-ratio:auto}
+    #${APP_ID} .scg-flow-cell .scg-textcard p,
+    #${APP_ID} .scg-flow-cell>p{min-height:0;flex:1}
+    #${APP_ID} .scg-flow-cell .scg-actions,
+    #${APP_ID} .scg-flow-cell .scg-meta{flex:none}
     /* Absolute positioning already isolates each card; lifting on hover would
        fight the measured geometry. */
-    #${APP_ID}[data-layout="flow"] .scg-flow-cell:hover{transform:none}
+    #${APP_ID} .scg-flow-cell:hover{transform:none}
+    /* A justified row gives a tall portrait very little width, and its chrome
+       does not shrink with it. These queries measure the card, not the window,
+       because two cards in the same row can want different answers. */
+    #${APP_ID}[data-layout="timeline"] .scg-flow-cell{container-type:inline-size}
+    #${APP_ID} .scg-flow-cell .scg-actions button>span{
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+    @container (max-width:240px){
+      #${APP_ID} .scg-flow-cell .scg-actions button>span{display:none}
+      #${APP_ID} .scg-flow-cell .scg-meta>span{display:none}
+      #${APP_ID} .scg-flow-cell .scg-badge span{display:none}
+    }
+    @container (max-width:150px){
+      #${APP_ID} .scg-flow-cell .scg-meta a>span{display:none}
+      #${APP_ID} .scg-flow-cell .scg-badge b{display:none}
+    }
 
     /* Layout: uniform grid */
     #${APP_ID}[data-layout="grid"] .scg-grid:not(.grouped),
@@ -6160,6 +6217,7 @@
           <div class="scg-layout-switcher" role="group" aria-label="Gallery layout">
             <button data-layout-mode="masonry" data-tooltip="Masonry layout (L)" aria-pressed="true">${iconWell('masonry')}<span>Masonry</span></button>
             <button data-layout-mode="flow" data-tooltip="Flow: masonry that renders only what is on screen, for very large threads (L)" aria-pressed="false">${iconWell('layout')}<span>Flow</span></button>
+            <button data-layout-mode="timeline" data-tooltip="Timeline: justified rows of even height with clean edges, rendered only where you are looking (L)" aria-pressed="false">${iconWell('timeline')}<span>Timeline</span></button>
             <button data-layout-mode="grid" data-tooltip="Uniform grid layout (L)" aria-pressed="false">${iconWell('grid')}<span>Grid</span></button>
             <button data-layout-mode="feed" data-tooltip="Wide feed layout (L)" aria-pressed="false">${iconWell('feed')}<span>Feed</span></button>
           </div>
@@ -6172,6 +6230,7 @@
                 <label>Group <select data-group-by><option value="none">Individual cards</option><option value="reply">Group by reply</option></select></label>
                 <label>Author <select data-author-filter></select></label>
                 <label>Host <select data-host-filter></select></label>
+                <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${viewPageSizeLabel(size)}</option>`).join('')}</select></label>
                 <button data-selected-only aria-pressed="false">${iconWell('select')}<span>Selected only</span></button>
                 <button data-action="reset-filters">${iconWell('reset')}<span>Reset all</span></button>
               </div>
@@ -6183,7 +6242,6 @@
             <button data-action="view-next" class="scg-tip-end" data-tooltip="Next result page" aria-label="Next result page">${iconWell('next')}<span>Next</span></button>
           </span>
           <label class="scg-size-control"><span>Media size</span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size"><output data-card-scale-value>100%</output></label>
-          <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${size}</option>`).join('')}</select></label>
         </div>
       </section>
       <div class="scg-active-facets" data-active-facets role="group" aria-label="Active filters" hidden></div>
@@ -6224,7 +6282,7 @@
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
         <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="flow">Flow (virtualized)</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout><option value="masonry">Masonry</option><option value="flow">Flow (virtualized)</option><option value="timeline">Timeline (virtualized)</option><option value="grid">Uniform grid</option><option value="feed">Feed</option></select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -6465,7 +6523,13 @@
   app.querySelector('[data-action="view-next"]').onclick = () => changeViewPage(state.viewPage + 1);
   app.querySelector('[data-view-page]').onchange = event => changeViewPage(event.target.value);
   app.querySelector('[data-page-size]').onchange = event => {
-    commitState({ perPage: Number(event.target.value), viewPage: 1 }, { persist: true });
+    const perPage = Number(event.target.value);
+    commitState({ perPage, viewPage: 1 }, { persist: true });
+    // Windowed layouts already ignore pagination. Everywhere else "All" means
+    // every card really is in the DOM, which is worth saying once.
+    if (perPage === 0 && !isWindowedLayout() && state.renderedItems.length > 800) {
+      notify(`All ${state.renderedItems.length.toLocaleString()} matches are now in the page. Flow or Timeline render only what is on screen.`, 6500);
+    }
   };
   app.querySelectorAll('[data-card-scale]').forEach(slider => {
     slider.oninput = event => {

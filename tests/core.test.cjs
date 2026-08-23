@@ -105,7 +105,7 @@ test('source retains provenance, memory, download, and ZIP safeguards', () => {
 
 test('gallery UI and media-size controls remain available', () => {
   assert.match(source, /data-ui', 'gallery'/);
-  assert.match(source, /Object\.freeze\(\['masonry', 'flow', 'grid', 'feed'\]\)/);
+  assert.match(source, /Object\.freeze\(\['masonry', 'flow', 'timeline', 'grid', 'feed'\]\)/);
   assert.match(source, /const THEME_MODES = Object\.freeze\(\['dark', 'light'\]\)/);
   assert.match(source, /min="70" max="160" step="5"/);
 });
@@ -612,11 +612,36 @@ test('viewer loader and translucent chrome have resilient motion states', () => 
   assert.match(source, /if \(!wasOpen\) box\.focus\(\{ preventScroll: true \}\)/);
 });
 
-test('per-view pagination supports larger galleries through 500 items', () => {
-  assert.match(source, /VIEW_PAGE_SIZES = Object\.freeze\(\[40, 60, 100, 200, 300, 500\]\)/);
+test('per-view pagination reaches All, and stops being a permanent control', () => {
+  // 0 rides along in the same list so every existing perPage validation still
+  // holds without a second code path.
+  assert.match(source, /VIEW_PAGE_SIZES = Object\.freeze\(\[40, 60, 100, 200, 300, 500, 0\]\)/);
   assert.match(source, /VIEW_PAGE_SIZES\.includes\(Number\(savedSettings\.perPage\)\)/);
   assert.match(source, /VIEW_PAGE_SIZES\.includes\(Number\(input\.perPage\)\)/);
-  assert.match(source, /VIEW_PAGE_SIZES\.map\(size => `<option value="\$\{size\}">\$\{size\}<\/option>`\)\.join\(''\)/);
+  assert.match(source, /viewPageSizeLabel = size => \(Number\(size\) > 0 \? String\(size\) : 'All'\)/);
+  assert.match(source, /const limit = Number\(state\.perPage\) > 0 \? Number\(state\.perPage\) : items\.length;/);
+
+  // Paging is a consequence of the page size, not a way to browse.
+  assert.match(source, /\.scg-view-pagination'\)\.hidden = state\.viewPages <= 1;/);
+  assert.match(source, /\.scg-view-pagination\[hidden\]\{display:none\}/);
+  // And the size control moves in with the other rarely-touched facets.
+  assert.match(source, /<label>Per view <select data-page-size>[\s\S]{0,200}<\/label>\s*<button data-selected-only/);
+});
+
+test('buildViewPages treats All as one view without a separate code path', () => {
+  const { buildViewPages } = evaluateSlice(
+    'function buildViewPages',
+    'function mediaItems',
+    ['buildViewPages'],
+    { state: { perPage: 0, groupBy: 'none' }, replyKey: item => String(item.reply) },
+  );
+  const items = Array.from({ length: 7 }, (_, index) => ({ id: index, reply: index % 3 }));
+
+  const all = plain(buildViewPages(items));
+  assert.equal(all.length, 1);
+  assert.equal(all[0].length, 7);
+  // An empty set is still one empty view, not zero views.
+  assert.deepEqual(plain(buildViewPages([])), [[]]);
 });
 
 test('display labels are free of known mojibake sequences', () => {
@@ -1122,13 +1147,14 @@ test('the accent tints the background from one corner, at a tunable strength', (
 
 test('flow is a windowed layout that positions cards itself', () => {
   // CSS multi-column cannot be windowed, so flow does its own placement.
-  assert.match(source, /const VIRTUALIZED_LAYOUTS = Object\.freeze\(\['flow'\]\)/);
-  assert.match(source, /packColumns\(entries, flowLayoutOptions\(containerWidth\)\)/);
+  assert.match(source, /const VIRTUALIZED_LAYOUTS = Object\.freeze\(\['flow', 'timeline'\]\)/);
+  assert.match(source, /timeline \? justifyRows\(entries, options\) : packColumns\(entries, options\)/);
   assert.match(source, /\.scg-grid\.flowing\{[\s\S]*?position:relative/);
   assert.match(source, /\.scg-flow-cell\{[\s\S]*?position:absolute/);
 
-  // The window index must be sorted by y: packColumns emits in item order.
-  assert.match(source, /const ordered = packed\.cells\.slice\(\)\.sort\(\(a, b\) => a\.y - b\.y/);
+  // The window index must be sorted by y. justifyRows already is; packColumns
+  // emits in item order, so only that one pays for the sort.
+  assert.match(source, /const ordered = timeline \? packed\.cells : packed\.cells\.slice\(\)\.sort\(\(a, b\) => a\.y - b\.y/);
   // And the range needs the tallest cell, or a tall card scrolling in from
   // above would never mount.
   assert.match(source, /visibleRowRange\(model\.cells, scrollArea\.scrollTop, scrollArea\.clientHeight, FLOW_OVERSCAN, model\.maxCellHeight\)/);
@@ -1145,6 +1171,32 @@ test('flow is a windowed layout that positions cards itself', () => {
   // Unmounting has to release media, or scrolling leaks players.
   assert.match(source, /function releaseFlowNode\(node\)/);
   assert.match(source, /teardownFlow\(\);/);
+});
+
+test('timeline justifies rows through the same windowed renderer as flow', () => {
+  // One renderer, two partitioners: everything below buildFlowModel is shared.
+  assert.match(source, /function isWindowedLayout\(\)\s*\{\s*return VIRTUALIZED_LAYOUTS\.includes\(state\.layoutMode\);/);
+  assert.doesNotMatch(source, /state\.layoutMode !== 'flow'/);
+  assert.doesNotMatch(source, /state\.layoutMode === 'flow' \? app\.querySelector/);
+
+  // In a justified layout the size slider chooses row height, not column width.
+  assert.match(source, /if \(state\.layoutMode === 'timeline'\)/);
+  assert.match(source, /const targetHeight = Math\.round\(\(state\.compact \? 180 : 250\) \* scale\);/);
+  assert.match(source, /maxRowHeight: Math\.round\(targetHeight \* 1\.6\),/);
+
+  // The windowed CSS keys off .flowing so both layouts get all of it.
+  assert.match(source, /#\$\{APP_ID\} \.scg-grid\.flowing\{/);
+  assert.match(source, /#\$\{APP_ID\} \.scg-flow-cell\{/);
+  assert.doesNotMatch(source, /\[data-layout="flow"\] \.scg-flow-cell/);
+
+  // A tall portrait in a justified row gets very little width, and the chrome
+  // does not shrink with it, so the card is queried rather than the window.
+  assert.match(source, /\[data-layout="timeline"\] \.scg-flow-cell\{container-type:inline-size\}/);
+  assert.match(source, /@container \(max-width:240px\)/);
+
+  // Both are offered, and both are reachable from the settings sheet.
+  assert.match(source, /data-layout-mode="timeline"/);
+  assert.match(source, /<option value="timeline">Timeline \(virtualized\)<\/option>/);
 });
 
 test('flow leaves the other layouts and reply grouping on the old path', () => {
