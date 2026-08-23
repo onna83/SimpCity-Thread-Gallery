@@ -987,6 +987,10 @@
     if (filterCheck) filterCheck.checked = state.filtersCollapsed;
     if (layoutSelect) layoutSelect.value = state.layoutMode;
     refreshThreadHeader();
+    // Density and card size feed the packing geometry, and both commit
+    // shell-only. A live windowed layout has to re-pack itself; when one is not
+    // live the upcoming render sets it up anyway.
+    if (flow.model) scheduleFlowLayout();
   }
 
   // Progressive disclosure: the Refine popover advertises how much it is hiding.
@@ -1059,11 +1063,19 @@
     catch { return false; }
   };
 
+  // Switching layout rebuilds the grid. It cannot be a shell-only repaint:
+  // masonry and grid are laid out by CSS, flow and timeline by us, and their
+  // cards are absolutely positioned. Only re-styling the shell leaves whatever
+  // the previous layout built still sitting there with its old geometry.
+  function setLayoutMode(next, announce = false) {
+    if (!LAYOUT_MODES.includes(next) || next === state.layoutMode) return;
+    commitState({ layoutMode: next }, { persist: true });
+    if (announce) notify(`${LAYOUT_LABELS[next]} layout`);
+  }
+
   function cycleLayoutMode(direction = 1, announce = true) {
     const current = Math.max(0, LAYOUT_MODES.indexOf(state.layoutMode));
-    const next = LAYOUT_MODES[(current + direction + LAYOUT_MODES.length) % LAYOUT_MODES.length];
-    commitState({ layoutMode: next }, { persist: true, shellOnly: true });
-    if (announce) notify(`${LAYOUT_LABELS[next]} layout`);
+    setLayoutMode(LAYOUT_MODES[(current + direction + LAYOUT_MODES.length) % LAYOUT_MODES.length], announce);
   }
 
   function commitState(patch, options = {}) {
@@ -4905,7 +4917,10 @@
     #${APP_ID} .scg-grid.flowing{
       position:relative;display:block;columns:auto;
     }
-    #${APP_ID} .scg-flow-cell{
+    /* Scoped to the flowing grid, not to the class alone: a card left over
+       from a windowed layout must not stay absolutely positioned once another
+       layout owns the grid. */
+    #${APP_ID} .scg-grid.flowing>.scg-flow-cell{
       position:absolute;margin:0;
       display:flex;flex-direction:column;
       contain:layout paint style;
@@ -6390,7 +6405,7 @@
     commitState({ compact: !state.compact }, { persist: true, shellOnly: true });
   };
   app.querySelectorAll('[data-layout-mode]').forEach(button => {
-    button.onclick = () => commitState({ layoutMode: button.dataset.layoutMode }, { persist: true, shellOnly: true });
+    button.onclick = () => setLayoutMode(button.dataset.layoutMode);
   });
   app.querySelector('[data-action="theme"]').onclick = () => {
     const current = Math.max(0, THEME_MODES.indexOf(state.theme));
@@ -6436,7 +6451,7 @@
     commitState({ compact: event.target.value === 'compact' }, { persist: true, shellOnly: true });
   };
   app.querySelector('[data-setting-layout]').onchange = event => {
-    commitState({ layoutMode: LAYOUT_MODES.includes(event.target.value) ? event.target.value : 'masonry' }, { persist: true, shellOnly: true });
+    setLayoutMode(LAYOUT_MODES.includes(event.target.value) ? event.target.value : 'masonry');
   };
   app.querySelector('[data-setting-filters-collapsed]').onchange = event => {
     commitState({ filtersCollapsed: event.target.checked }, { persist: true, shellOnly: true });

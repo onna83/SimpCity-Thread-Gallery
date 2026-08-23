@@ -1201,7 +1201,9 @@ test('timeline justifies rows through the same windowed renderer as flow', () =>
 
   // The windowed CSS keys off .flowing so both layouts get all of it.
   assert.match(source, /#\$\{APP_ID\} \.scg-grid\.flowing\{/);
-  assert.match(source, /#\$\{APP_ID\} \.scg-flow-cell\{/);
+  // Scoped to the flowing grid: a cell left behind by a windowed layout must
+  // not stay absolutely positioned once another layout owns the grid.
+  assert.match(source, /#\$\{APP_ID\} \.scg-grid\.flowing>\.scg-flow-cell\{\s*position:absolute/);
   assert.doesNotMatch(source, /\[data-layout="flow"\] \.scg-flow-cell/);
 
   // A tall portrait in a justified row gets very little width, and the chrome
@@ -1212,6 +1214,21 @@ test('timeline justifies rows through the same windowed renderer as flow', () =>
   // Both are offered, and both are reachable from the settings sheet.
   assert.match(source, /data-layout-mode="timeline"/);
   assert.match(source, /<option value="timeline">Timeline \(virtualized\)<\/option>/);
+});
+
+test('changing layout rebuilds the grid rather than restyling the shell', () => {
+  // masonry and grid are laid out by CSS; flow and timeline are laid out by us
+  // and position their cards absolutely. A shell-only commit changes the
+  // data-layout attribute without touching the DOM, which leaves whatever the
+  // previous layout built still on screen at its old coordinates.
+  assert.match(source, /function setLayoutMode\(next, announce = false\) \{[\s\S]*?commitState\(\{ layoutMode: next \}, \{ persist: true \}\);/);
+  assert.doesNotMatch(source, /layoutMode[^\n]*\{ persist: true, shellOnly: true \}/);
+  assert.match(source, /button\.onclick = \(\) => setLayoutMode\(button\.dataset\.layoutMode\)/);
+  assert.match(source, /setLayoutMode\(LAYOUT_MODES\.includes\(event\.target\.value\)/);
+
+  // Density and card size stay shell-only, so a live windowed layout re-packs
+  // itself instead of keeping geometry it computed at another size.
+  assert.match(source, /if \(flow\.model\) scheduleFlowLayout\(\);/);
 });
 
 test('flow leaves the other layouts and reply grouping on the old path', () => {
