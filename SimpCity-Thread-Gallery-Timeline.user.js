@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.10.0
-// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing and verified downloads.
+// @version      0.12.0
+// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing, verified downloads, Bunkr resolution and URL list export.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -19,16 +19,17 @@
   // DESIGN DIRECTION: the media canvas is the page; a single
   // floating instrument plate carries every frequent control; the dock at the
   // foot of the canvas changes identity between browse, select and download.
-  // v0.9.7 keeps the established architecture while reducing rendering work
-  // and adding safer scanning plus reply-level grouping and selection controls.
+  // The architecture is unchanged from the stable line; this fork reduces
+  // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.10.0';
+  const APP_VERSION = '0.12.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
   const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-timeline-storage-migrated-v1';
   const LARGE_THREAD_WARNING_PAGES = 50;
   const RATIO_CACHE_KEY = 'sc-thread-gallery-timeline-ratio-cache-v1';
+  const TAB_SYNC_CHANNEL = 'sc-thread-gallery-timeline-sync-v1';
   const RATIO_CACHE_LIMIT = 4000;
   const DEFAULT_RATIO = 0.72;
   const SCAN_WARNING_TEXT = 'Scanning a very large thread can use substantial RAM and may temporarily slow or freeze the browser. Media files remain unloaded until viewed.';
@@ -52,7 +53,19 @@
     dedupeContent: true,
     warnLargeThreadScan: true,
     accent: 'blue',
+    blockPatterns: '',
   });
+
+  // Only chords that fire outside a text field are rebindable. The viewer's
+  // single-key controls stay fixed: they are modal, documented on the viewer
+  // itself, and rebinding them would need its own conflict model.
+  const SHORTCUT_ACTIONS = Object.freeze([
+    Object.freeze({ id: 'toggle', label: 'Open or close the gallery', fallback: 'Shift+G', requiresModifier: true }),
+    Object.freeze({ id: 'search', label: 'Focus the search box', fallback: '/' }),
+    Object.freeze({ id: 'layout', label: 'Cycle the gallery layout', fallback: 'L' }),
+    Object.freeze({ id: 'selectAll', label: 'Select everything in this view', fallback: 'A' }),
+  ]);
+  const DEFAULT_SHORTCUTS = Object.freeze(Object.fromEntries(SHORTCUT_ACTIONS.map(action => [action.id, action.fallback])));
   const THEME_MODES = Object.freeze(['dark', 'light']);
   const THEME_LABELS = Object.freeze({ dark: 'Darkroom', light: 'Daylight' });
   const ACCENT_MODES = Object.freeze(['blue', 'indigo', 'amber', 'green', 'rose', 'neutral']);
@@ -64,14 +77,19 @@
   const LEGACY_THEME_ACCENTS = Object.freeze({ midnight: 'indigo', graphite: 'amber' });
   // 0 is "All": one view, no paging. Kept in the same list so every existing
   // validation of a stored perPage keeps working unchanged.
-  const LAYOUT_MODES = Object.freeze(['masonry', 'flow', 'timeline', 'grid', 'feed']);
-  const LAYOUT_LABELS = Object.freeze({
-    masonry: 'Masonry', flow: 'Flow', timeline: 'Timeline', grid: 'Uniform grid', feed: 'Feed',
-  });
-  // Two windowed layouts over one engine: flow packs columns, timeline
-  // justifies rows. CSS multi-column masonry stays the default until they
-  // prove out. Both preserve aspect ratio; they differ in which axis varies.
-  const VIRTUALIZED_LAYOUTS = Object.freeze(['flow', 'timeline']);
+  // Two layouts, because two is what the content needs: ragged columns that
+  // keep every aspect ratio, or uniform cells for scanning. Flow was masonry
+  // computed rather than CSS-balanced, which is an implementation detail and
+  // never belonged in a picker; masonry is that renderer now. Timeline and
+  // Feed were a third geometry and a one-per-row reader, and neither earned
+  // its place beside the viewer.
+  const LAYOUT_MODES = Object.freeze(['masonry', 'grid']);
+  const LAYOUT_LABELS = Object.freeze({ masonry: 'Masonry', grid: 'Uniform grid' });
+  // CSS multi-column cannot be windowed: the browser has to see every box to
+  // balance the columns. Masonry therefore places its own cards and mounts only
+  // what is near the viewport, which is what makes a several-thousand-item
+  // thread survivable in the default layout.
+  const VIRTUALIZED_LAYOUTS = Object.freeze(['masonry']);
   // Both layout pickers are built from the same list, so adding a layout is
   // one entry rather than two hand-maintained option lists.
   const layoutOptionsMarkup = () => LAYOUT_MODES
@@ -110,6 +128,123 @@
       } catch { /* Reset should continue even if storage is restricted. */ }
     },
   };
+
+  /* ---- Cross-tab state -----------------------------------------------------
+     Every tab holds its own copy of the download history and ratio cache and
+     writes the whole map back. Two tabs on one thread therefore erase each
+     other: the second writer's snapshot predates the first writer's downloads.
+     The fix is in two halves. Merging what is on disk back in before every
+     write makes the data safe on its own; the channel below only keeps the
+     other tab's UI honest between writes.
+     ------------------------------------------------------------------------ */
+
+  // Verified always outranks legacy, because a legacy marker is a weaker claim
+  // about the same file. Between two records of equal standing, newer wins.
+  function mergeDownloadHistory(base, additions) {
+    const merged = Object.assign({}, base && typeof base === 'object' && !Array.isArray(base) ? base : {});
+    Object.entries(additions && typeof additions === 'object' && !Array.isArray(additions) ? additions : {}).forEach(([key, entry]) => {
+      if (!key || !entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const existing = merged[key];
+      if (!existing) { merged[key] = entry; return; }
+      if (existing.verified !== entry.verified) merged[key] = entry.verified ? entry : existing;
+      else merged[key] = Number(entry.time || 0) >= Number(existing.time || 0) ? entry : existing;
+    });
+    return merged;
+  }
+
+  const tabSync = {
+    channel: null,
+    handlers: new Map(),
+    start() {
+      if (tabSync.channel || typeof BroadcastChannel !== 'function') return false;
+      try {
+        tabSync.channel = new BroadcastChannel(TAB_SYNC_CHANNEL);
+        tabSync.channel.onmessage = event => {
+          const message = event && event.data;
+          if (!message || typeof message !== 'object') return;
+          const handler = tabSync.handlers.get(message.type);
+          if (handler) handler(message);
+        };
+        return true;
+      } catch { tabSync.channel = null; return false; }
+    },
+    on(type, handler) { tabSync.handlers.set(type, handler); },
+    post(type, payload = {}) {
+      if (!tabSync.channel) return false;
+      try { tabSync.channel.postMessage(Object.assign({ type }, payload)); return true; }
+      catch { return false; }
+    },
+  };
+
+  /* ---- Rebindable chords ---------------------------------------------------
+     A chord is stored and compared as its normalized string, so the recorder,
+     the settings display and the dispatcher all agree by construction.
+     ------------------------------------------------------------------------ */
+
+  const MODIFIER_KEYS = Object.freeze(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'Dead']);
+
+  function shortcutCombo(event) {
+    const key = event && typeof event.key === 'string' ? event.key : '';
+    if (!key || MODIFIER_KEYS.includes(key)) return '';
+    const parts = [];
+    if (event.ctrlKey) parts.push('Ctrl');
+    if (event.altKey) parts.push('Alt');
+    if (event.shiftKey) parts.push('Shift');
+    if (event.metaKey) parts.push('Meta');
+    parts.push(key.length === 1 ? key.toUpperCase() : key);
+    return parts.join('+');
+  }
+
+  const shortcutHasModifier = combo => /^(?:Ctrl|Alt|Shift|Meta)\+/.test(String(combo || ''));
+
+  // Two passes, so a deliberate swap survives a reload: every stored binding is
+  // placed before any default is handed out. An action whose default has been
+  // taken by someone else ends up unbound rather than shadowed, because a
+  // binding two actions answer to is worse than one that does nothing.
+  function normalizedShortcuts(input) {
+    const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const claimed = new Set();
+    const result = {};
+    SHORTCUT_ACTIONS.forEach(action => {
+      const stored = typeof source[action.id] === 'string' ? source[action.id].trim() : '';
+      if (!stored || stored.length > 40) return;
+      if (action.requiresModifier && !shortcutHasModifier(stored)) return;
+      if (claimed.has(stored)) return;
+      claimed.add(stored);
+      result[action.id] = stored;
+    });
+    SHORTCUT_ACTIONS.forEach(action => {
+      if (result[action.id]) return;
+      result[action.id] = claimed.has(action.fallback) ? '' : action.fallback;
+      if (result[action.id]) claimed.add(result[action.id]);
+    });
+    return result;
+  }
+
+  function shortcutConflict(shortcuts, actionId, combo) {
+    return SHORTCUT_ACTIONS.some(action => action.id !== actionId && shortcuts[action.id] === combo);
+  }
+
+  /* ---- Block patterns ------------------------------------------------------
+     Filters hide; this never ingests. A blocked URL costs no card, no ratio
+     cache entry and no memory, which is the point on a several-thousand-item
+     thread full of signature images.
+     ------------------------------------------------------------------------ */
+
+  function blockPatternList(raw) {
+    return [...new Set(String(raw == null ? '' : raw)
+      .split(/[,\n\r]+/)
+      .map(pattern => pattern.trim().toLowerCase())
+      .filter(pattern => pattern.length >= 2))].slice(0, 60);
+  }
+
+  function matchesBlockPattern(urls, patterns) {
+    if (!patterns || !patterns.length) return false;
+    return (Array.isArray(urls) ? urls : [urls]).some(candidate => {
+      const value = String(candidate == null ? '' : candidate).toLowerCase();
+      return Boolean(value) && patterns.some(pattern => value.includes(pattern));
+    });
+  }
 
   function migrateLegacyStorage() {
     if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return false;
@@ -177,15 +312,19 @@
     includeManifest: savedSettings.includeManifest !== false,
     dedupeContent: savedSettings.dedupeContent !== false,
     warnLargeThreadScan: savedSettings.warnLargeThreadScan !== false,
+    blockPatterns: typeof savedSettings.blockPatterns === 'string' ? savedSettings.blockPatterns : DEFAULT_SETTINGS.blockPatterns,
+    shortcuts: normalizedShortcuts(savedSettings.shortcuts),
     authorFilter: 'all',
     hostFilter: 'all',
     selectedOnly: false,
     viewPage: 1,
     viewPages: 1,
+    appliedPerPage: 0,
     renderedItems: [],
     replyIndex: null,
     expandedKeys: new Set(),
     activePlayers: new Set(),
+    playbackPositions: new Map(),
     threadPageCount: 1,
     sourcePage: 1,
     selected: new Set(),
@@ -293,6 +432,7 @@
   let ratioCache = storedRatioCache && typeof storedRatioCache === 'object' && !Array.isArray(storedRatioCache) ? storedRatioCache : {};
   let pendingRatios = {};
   let ratioFlushTimer = 0;
+  let ratioCacheReadAt = Date.now();
 
   function assumedRatio() {
     return geometricMeanRatio(ratioStats.logSum, ratioStats.count, DEFAULT_RATIO);
@@ -309,6 +449,17 @@
       const additions = pendingRatios;
       pendingRatios = {};
       if (!Object.keys(additions).length) return;
+      // Losing a cached ratio only costs one first-paint layout guess, so this
+      // re-reads on a timer rather than on every flush during a fast scroll.
+      if (Date.now() - ratioCacheReadAt > 15000) {
+        ratioCacheReadAt = Date.now();
+        try {
+          const stored = storage.get(RATIO_CACHE_KEY, null);
+          if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+            ratioCache = mergeRatioCache(stored, ratioCache, RATIO_CACHE_LIMIT);
+          }
+        } catch { /* Fall back to this tab's copy. */ }
+      }
       ratioCache = mergeRatioCache(ratioCache, additions, RATIO_CACHE_LIMIT);
       try { storage.set(RATIO_CACHE_KEY, ratioCache); }
       catch { /* Layout must not depend on storage being writable. */ }
@@ -390,7 +541,12 @@
     const gap = options.gap;
     const chromeHeight = options.chromeHeight || 0;
     const fallback = options.assumedRatio || 0.72;
-    const columns = Math.max(1, Math.floor((options.containerWidth + gap) / (options.columnWidth + gap)));
+    // Without a cap this fills the width, which is denser than the CSS columns
+    // it replaced: those preferred fewer, larger cards. maxColumns carries that
+    // preference over, so folding the windowed renderer into masonry did not
+    // silently change how the default layout looks.
+    const fits = Math.max(1, Math.floor((options.containerWidth + gap) / (options.columnWidth + gap)));
+    const columns = Number(options.maxColumns) > 0 ? Math.min(fits, Number(options.maxColumns)) : fits;
     const width = Math.floor((options.containerWidth - (gap * (columns - 1))) / columns);
     const bottoms = new Array(columns).fill(0);
     const cells = entries.map(entry => {
@@ -411,56 +567,6 @@
     });
     const tallest = bottoms.reduce((max, value) => (value > max ? value : max), 0);
     return { cells, columns, columnWidth: width, height: Math.max(0, tallest - gap) };
-  }
-
-  // Justified rows: fill greedily to the target height, then scale the row so
-  // it spans the container exactly. The rounding remainder goes to the last
-  // cell, which is what removes sub-pixel seams at the right edge.
-  function justifyRows(entries, options) {
-    const gap = options.gap;
-    const chromeHeight = options.chromeHeight || 0;
-    const fallback = options.assumedRatio || 0.72;
-    const targetHeight = options.targetHeight;
-    const maxRowHeight = options.maxRowHeight || (targetHeight * 1.6);
-    const containerWidth = options.containerWidth;
-    const cells = [];
-    let row = [];
-    let sumRatio = 0;
-    let top = 0;
-    let rows = 0;
-
-    const flush = isLast => {
-      if (!row.length) return;
-      const available = containerWidth - (gap * (row.length - 1));
-      const natural = available / sumRatio;
-      // A single trailing image stretched to fill the width is the classic
-      // justified-layout disfigurement. Leave the gap instead.
-      const stretch = !isLast || natural <= maxRowHeight;
-      const height = Math.round(stretch ? natural : targetHeight);
-      let x = 0;
-      row.forEach((entry, index) => {
-        const isLastCell = index === row.length - 1;
-        const width = isLastCell && stretch
-          ? Math.max(1, containerWidth - x)
-          : Math.round(entryRatio(entry, fallback) * height);
-        cells.push({ key: entry.key, x, y: top, width, height: height + chromeHeight });
-        x += width + gap;
-      });
-      top += height + chromeHeight + gap;
-      rows += 1;
-      row = [];
-      sumRatio = 0;
-    };
-
-    entries.forEach(entry => {
-      row.push(entry);
-      sumRatio += entryRatio(entry, fallback);
-      const available = containerWidth - (gap * (row.length - 1));
-      if (available / sumRatio <= targetHeight) flush(false);
-    });
-    flush(true);
-
-    return { cells, rows, height: Math.max(0, top - gap) };
   }
 
   function stackSections(sections, options) {
@@ -523,6 +629,7 @@
   }
 
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
+  const IMAGE_EXT_BARE = /^(?:jpe?g|png|gif|webp|avif|bmp)$/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
   const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
@@ -787,6 +894,14 @@
       embed: url => { url.pathname = url.pathname.replace(/^\/d\//, '/e/'); return url.href; },
     }),
     Object.freeze({
+      // Bunkr serves images and videos behind one link shape, so `media` only
+      // says which facet the thread markup lands it in; the byte signature
+      // decides what the file actually is at download time.
+      id: 'bunkr', media: 'video',
+      matches: host => /(?:^|\.)bunkr+\.[a-z]{2,6}$/i.test(host),
+      mediaId: url => url.pathname.match(/^\/f\/([^/?#]+)/i)?.[1] || '',
+    }),
+    Object.freeze({
       id: 'generic-video-host', media: 'video',
       matches: host => /(?:^|\.)(?:voe\.|gofile\.io$|cyberfile\.|pixeldrain\.com$|bunkr\.|saint2\.|saint\.to$|imgur\.com$|mega\.nz$)/i.test(host),
     }),
@@ -825,13 +940,26 @@
 
   const isMediaItem = item => item?.type === 'image' || item?.type === 'video' || item?.type === 'embed';
 
+  // A single Bunkr file has a resolver that runs at queue time, so it counts as
+  // downloadable before anything has been resolved. An album page has no file
+  // behind it and must stay out of the ZIP queue.
+  const isBunkrFileUrl = rawUrl => hostDefinition(rawUrl)?.id === 'bunkr' && Boolean(hostMediaId(rawUrl));
+
+  function hasDirectResolver(item) {
+    if (!item) return false;
+    return hostDefinition(item.url)?.id === 'turbo' || isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink);
+  }
+
   function isDownloadableMedia(item) {
     if (!isMediaItem(item)) return false;
     const candidate = item.resolution?.candidate;
     if (candidate?.status === 'failed' || (item.resolution?.attempted && !candidate?.url)) return false;
     if (item.type === 'image') return Boolean(candidate?.url || item.url || item.thumb);
     if (item.type === 'video') return Boolean((candidate?.url && VIDEO_EXT.test(candidate.url)) || VIDEO_EXT.test(item.url || ''));
-    return Boolean(candidate?.status === 'confirmed' && candidate.url) || hostDefinition(item.url)?.id === 'turbo';
+    if (candidate?.status === 'confirmed' && candidate.url) return true;
+    // Hosts with a resolver that runs at queue time. A failed attempt has
+    // already returned above, so a dead link cannot come back through here.
+    return hasDirectResolver(item);
   }
 
   function downloadHistoryKey(item) {
@@ -860,19 +988,47 @@
     }, { verified: 0, legacy: 0 });
   }
 
-  function persistDownloadHistory() {
+  // Records this tab has created but not yet written. Kept apart from
+  // state.downloadHistory, which is a view of the record plus these.
+  let pendingHistoryWrites = {};
+
+  function readStoredDownloadHistory() {
+    const stored = storage.get(DOWNLOAD_HISTORY_KEY, {});
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? normalizeDownloadHistory(stored) : {};
+  }
+
+  // Storage is the record; this tab only ever contributes what it created since
+  // its last write. Writing the whole in-memory map back would let a tab that
+  // missed a Clear History elsewhere resurrect every record it still held.
+  // `replace` is for restoring a backup, where the file is meant to be the record.
+  function persistDownloadHistory({ replace = false } = {}) {
     try {
-      const entries = Object.entries(state.downloadHistory)
+      const next = replace ? state.downloadHistory : mergeDownloadHistory(readStoredDownloadHistory(), pendingHistoryWrites);
+      const entries = Object.entries(next)
         .sort((a, b) => Number(b[1]?.time || 0) - Number(a[1]?.time || 0))
         .slice(0, 5000);
       state.downloadHistory = Object.fromEntries(entries);
+      pendingHistoryWrites = {};
       storage.set(DOWNLOAD_HISTORY_KEY, state.downloadHistory);
+      // An invalidation, never a payload: a payload would be a second source of
+      // truth, and one bounded small enough to broadcast would silently truncate
+      // a large import in every other tab.
+      tabSync.post('download-history-changed');
     } catch { /* Downloading must still work if local storage is unavailable. */ }
+  }
+
+  // Re-reads the record and re-applies whatever this tab has not written yet, so
+  // an invalidation never discards an in-flight ZIP batch's markers.
+  function reloadDownloadHistory() {
+    state.downloadHistory = mergeDownloadHistory(readStoredDownloadHistory(), pendingHistoryWrites);
+    updateDownloadedIndicators();
+    if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
   }
 
   function rememberDownloaded(item, filename, validation, deferPersist = false, container = '') {
     if (!validation?.verified) return false;
-    state.downloadHistory[downloadHistoryKey(item)] = {
+    const historyKey = downloadHistoryKey(item);
+    const entry = {
       filename,
       size: Math.max(0, Number(validation.size || validation.blob?.size || 0)),
       time: Date.now(),
@@ -882,6 +1038,10 @@
       method: String(validation.method || 'validated-media'),
       container: String(container || ''),
     };
+    state.downloadHistory[historyKey] = entry;
+    // Tracked separately so the next write contributes only this, not the whole
+    // map this tab happens to be holding.
+    pendingHistoryWrites[historyKey] = entry;
     if (!deferPersist) {
       persistDownloadHistory();
       updateDownloadedIndicators();
@@ -909,6 +1069,8 @@
         includeManifest: state.includeManifest,
         dedupeContent: state.dedupeContent,
         warnLargeThreadScan: state.warnLargeThreadScan,
+        blockPatterns: state.blockPatterns,
+        shortcuts: state.shortcuts,
       });
     }
     catch { /* Private browsing or storage restrictions should not break the gallery. */ }
@@ -980,10 +1142,10 @@
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
     sizeSliders.forEach(slider => {
       slider.value = String(cardScale);
-      slider.disabled = state.layoutMode === 'feed';
-      slider.setAttribute('aria-valuetext', `${cardScale}%${state.layoutMode === 'feed' ? ', unavailable in feed layout' : ''}`);
+      slider.disabled = state.scanning;
+      slider.setAttribute('aria-valuetext', `${cardScale}%`);
     });
-    sizeLabels.forEach(label => { label.textContent = state.layoutMode === 'feed' ? 'Feed' : `${cardScale}%`; });
+    sizeLabels.forEach(label => { label.textContent = `${cardScale}%`; });
     if (filterCheck) filterCheck.checked = state.filtersCollapsed;
     layoutSelects.forEach(select => { select.value = state.layoutMode; });
     refreshThreadHeader();
@@ -1110,7 +1272,13 @@
     return { article, body, author, postUrl, postId, postNumber };
   };
 
-  function extractFromDocument(doc, pageUrl) {
+  function itemIsBlocked(item, patterns) {
+    if (!item || !patterns || !patterns.length) return false;
+    if (item.type === 'text') return false;
+    return matchesBlockPattern([item.url, item.thumb, item.originalLink], patterns);
+  }
+
+  function extractFromDocument(doc, pageUrl, blockPatterns = blockPatternList(state.blockPatterns)) {
     const results = [];
     const posts = [...doc.querySelectorAll('article.message, .message--post')];
     const roots = posts.length ? posts : [...doc.querySelectorAll('.message')];
@@ -1201,7 +1369,22 @@
       const text = cleanText(content);
       if (text) results.push({ type: 'text', text, ...common });
     });
-    return results;
+    return blockPatterns.length ? results.filter(item => !itemIsBlocked(item, blockPatterns)) : results;
+  }
+
+  // Editing the pattern list has to act on what is already indexed, or the
+  // setting reads as broken until the next full scan.
+  function purgeBlockedItems() {
+    const patterns = blockPatternList(state.blockPatterns);
+    if (!patterns.length) return 0;
+    const kept = state.items.filter(item => !itemIsBlocked(item, patterns));
+    const removed = state.items.length - kept.length;
+    if (!removed) return 0;
+    const survivors = new Set(kept.map(item => item.selectionKey));
+    state.selected.forEach(key => { if (!survivors.has(key)) state.selected.delete(key); });
+    state.items = kept;
+    invalidateVisibleItems({ dataset: true, selection: true });
+    return removed;
   }
 
   function itemDedupeKey(item) {
@@ -1240,10 +1423,14 @@
   function requestText(url, options = {}) {
     const headers = options.headers || {};
     const timeout = options.timeout || 18000;
+    const method = String(options.method || 'GET').toUpperCase();
+    const body = options.data;
     return new Promise((resolve, reject) => {
       if (typeof GM_xmlhttpRequest !== 'function') {
         const sameOrigin = (() => { try { return new URL(url).origin === location.origin; } catch { return false; } })();
         fetch(url, {
+          method,
+          body: method === 'GET' || method === 'HEAD' ? undefined : body,
           credentials: sameOrigin ? 'include' : 'omit',
           headers,
           referrer: headers.Referer || headers.referer || undefined,
@@ -1253,9 +1440,10 @@
         return;
       }
       GM_xmlhttpRequest({
-        method: 'GET',
+        method,
         url,
         headers,
+        data: method === 'GET' || method === 'HEAD' ? undefined : body,
         timeout,
         onload: response => response.status >= 200 && response.status < 400
           ? resolve(response.responseText)
@@ -1376,9 +1564,142 @@
     return failedResolution('Turbo did not expose a direct video file', 'video', { method: 'turbo', fallbackUrl });
   }
 
+  /* ---- Bunkr ---------------------------------------------------------------
+     Bunkr hands out short-lived signed CDN URLs rather than stable file paths,
+     so nothing in the thread markup is downloadable on its own. Three hops get
+     there: the file page carries a numeric id, one API call turns that into a
+     CDN base plus path, and a second signs the path. The resolver chain
+     follows Bunkr Album Downloader by pinkman (MIT); the grading, diagnostics
+     and byte validation around it are this gallery's.
+     ------------------------------------------------------------------------ */
+
+  function signedUrlExpiry(value, now = Date.now()) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    const milliseconds = numeric > 1e12 ? numeric : numeric * 1000;
+    // Anything already past, or more than a week out, is not an expiry we can
+    // act on; treating it as absent leaves the resolution cached as before.
+    if (milliseconds <= now || milliseconds > now + 7 * 24 * 3600 * 1000) return 0;
+    return Math.round(milliseconds);
+  }
+
+  const BUNKR_API_ORIGIN = 'https://dl.bunkr.cr';
+  const BUNKR_SIGN_ORIGIN = 'https://glb-apisign.cdn.cr';
+
+  // The page is a Next.js build whose props shape moves around, so this looks
+  // for the record rather than a fixed path: a numeric id sitting next to a
+  // filename is the file object wherever it happens to live this week.
+  function findBunkrFileRecord(value, depth = 0) {
+    if (depth > 12 || !value || typeof value !== 'object') return null;
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        const found = findBunkrFileRecord(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    const name = value.name || value.filename || value.original || '';
+    if (name && /^\d{5,12}$/.test(String(value.id == null ? '' : value.id))) {
+      return { id: String(value.id), name: String(name) };
+    }
+    for (const child of Object.values(value)) {
+      const found = findBunkrFileRecord(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function bunkrFileRecordFromHtml(html) {
+    const source = String(html || '');
+    const nextData = source.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (nextData) {
+      try {
+        const found = findBunkrFileRecord(JSON.parse(nextData[1]));
+        if (found) return found;
+      } catch { /* Fall through to the flatter probes below. */ }
+    }
+    const direct = source.match(/dl\.bunkr+\.[a-z]{2,6}\/file\/(\d+)/i);
+    if (direct) return { id: direct[1], name: '' };
+    const ids = [...source.matchAll(/"id"\s*:\s*(\d{5,12})/g)];
+    return ids.length ? { id: ids[ids.length - 1][1], name: '' } : null;
+  }
+
+  function bunkrFilePage(item) {
+    return [item && item.originalLink, item && item.url]
+      .map(candidate => normalizeSourceUrl(candidate))
+      .find(candidate => candidate && hostDefinition(candidate)?.id === 'bunkr') || '';
+  }
+
+  async function resolveBunkrFile(item) {
+    const filePage = bunkrFilePage(item);
+    const mediaType = item.type === 'image' ? 'image' : 'video';
+    const fail = (reason, extras = {}) => failedResolution(reason, mediaType, { method: 'bunkr', fallbackUrl: filePage || undefined, ...extras });
+    if (!filePage) return fail('No Bunkr file link was found on this item');
+    // Album links list files; they are not a file themselves.
+    if (!hostMediaId(filePage)) return fail('This Bunkr link is an album page rather than a single file');
+    const apiHeaders = { Accept: 'application/json', Origin: BUNKR_API_ORIGIN, Referer: `${BUNKR_API_ORIGIN}/` };
+
+    let record = null;
+    try {
+      record = bunkrFileRecordFromHtml(await requestText(filePage, {
+        headers: { Accept: 'text/html,*/*', Referer: item.postUrl || location.href },
+      }));
+    } catch (error) {
+      console.debug('[SimpCity Gallery] Bunkr file page request failed', error);
+      recordDiagnostic('resolverFailures', 'Bunkr file page', error, item);
+      return fail(error.message || 'The Bunkr file page could not be read');
+    }
+    if (!record) return fail('The Bunkr file page did not expose a numeric file id');
+
+    let metadata = null;
+    try {
+      metadata = JSON.parse(await requestText(`${BUNKR_API_ORIGIN}/api/_001_v2`, {
+        method: 'POST',
+        data: JSON.stringify({ id: record.id }),
+        headers: { ...apiHeaders, 'Content-Type': 'application/json' },
+      }));
+    } catch (error) {
+      console.debug('[SimpCity Gallery] Bunkr metadata request failed', error);
+      recordDiagnostic('resolverFailures', 'Bunkr metadata', error, item);
+      return fail(error.message || 'The Bunkr metadata request failed');
+    }
+    if (!metadata || !metadata.mediafiles || !metadata.path) return fail('The Bunkr metadata response was incomplete');
+
+    let signature = null;
+    try {
+      signature = JSON.parse(await requestText(`${BUNKR_SIGN_ORIGIN}/sign?path=${encodeURIComponent(metadata.path)}`, { headers: apiHeaders }));
+    } catch (error) {
+      console.debug('[SimpCity Gallery] Bunkr signing request failed', error);
+      recordDiagnostic('resolverFailures', 'Bunkr signing', error, item);
+      return fail(error.message || 'The Bunkr signing request failed');
+    }
+    if (!signature || !signature.token || !signature.ex) return fail('Bunkr did not return a signing token');
+
+    const name = String(metadata.original || record.name || hostMediaId(filePage));
+    const url = `${String(metadata.mediafiles).replace(/\/+$/, '')}${metadata.path}` +
+      `?n=${encodeURIComponent(name)}&token=${encodeURIComponent(signature.token)}&ex=${encodeURIComponent(signature.ex)}`;
+    return resolutionResult('confirmed', url, 'bunkr-signed-cdn', mediaType, {
+      headers: { Referer: `${BUNKR_API_ORIGIN}/` },
+      fallbackUrl: filePage,
+      expiresAt: signedUrlExpiry(signature.ex),
+      // Bunkr will happily return a JPEG for a link the thread presented as a
+      // video embed, so the signature check must not hold it to a guess.
+      mediaTypeUnknown: true,
+    });
+  }
+
   async function resolveCandidate(item) {
     if (!item) return failedResolution('Media item is missing', '');
     item.resolution ||= {};
+    // A signed CDN URL stops working. Resolving a card for display and
+    // downloading it an hour later would otherwise reuse a dead URL and read as
+    // a broken host, so an expiring candidate is dropped shortly before it dies.
+    const cached = item.resolution.candidate;
+    if (cached && cached.expiresAt && Date.now() >= Number(cached.expiresAt) - 60000) {
+      item.resolution.candidate = null;
+      item.resolution.attempted = false;
+      delete item.resolution.failedAt;
+    }
     if (item.resolution.attempted && item.resolution.candidate) return item.resolution.candidate;
     if (item.resolution.promise) return item.resolution.promise;
     if (item.resolution.failedAt && Date.now() - item.resolution.failedAt < 60000) {
@@ -1405,6 +1726,7 @@
       let sourceUrl;
       try { sourceUrl = new URL(normalizeSourceUrl(item.originalLink)); } catch { sourceUrl = null; }
       const imageId = sourceUrl ? sourceDefinition?.imageId?.(sourceUrl) : '';
+      if (isBunkrFileUrl(item.originalLink)) return resolveBunkrFile(item);
       if (sourceDefinition?.id === 'goonbox' && imageId) {
         try {
           const payload = JSON.parse(await requestText(`https://goonbox.cr/api/images/${imageId}`));
@@ -1430,6 +1752,7 @@
     }
     if (seed?.url && VIDEO_EXT.test(seed.url)) return resolutionResult('confirmed', seed.url, seed.method || 'direct-video', 'video');
     if (hostDefinition(item.url)?.id === 'turbo') return resolveTurboVideo(item);
+    if (isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink)) return resolveBunkrFile(item);
     try {
       const found = mediaFromHtml(await requestText(item.url), item.url, 'video');
       if (found && VIDEO_EXT.test(found)) return resolutionResult('confirmed', found, `${hostDefinition(item.url)?.id || 'generic'}-video-page`, 'video');
@@ -1469,7 +1792,7 @@
     const page = Math.max(1, Number(item.pageNumber || pageNumberFromUrl(item.pageUrl || item.postUrl)) || 1);
     const postDigits = String(item.postNumber || item.postId || '').match(/\d+/g)?.pop();
     const reply = postDigits || String(Number(item.postIndex || 0) + 1);
-    const type = item.type === 'image' ? 'img' : 'vid';
+    const type = (verifiedExtension ? IMAGE_EXT_BARE.test(verifiedExtension) : item.type === 'image') ? 'img' : 'vid';
     const order = String(Number(item.mediaIndex || 0) + 1).padStart(2, '0');
     const base = `${threadFilePrefix(item.pageUrl || item.postUrl)}-p${page}-r${reply}-${type}${order}`;
     return `${base}.${ext.toLowerCase()}`;
@@ -1803,6 +2126,8 @@
       includeManifest: input.includeManifest !== false,
       dedupeContent: input.dedupeContent !== false,
       warnLargeThreadScan: input.warnLargeThreadScan !== false,
+      blockPatterns: typeof input.blockPatterns === 'string' ? input.blockPatterns.slice(0, 2000) : DEFAULT_SETTINGS.blockPatterns,
+      shortcuts: normalizedShortcuts(input.shortcuts),
     };
   }
 
@@ -1825,6 +2150,8 @@
       includeManifest: state.includeManifest,
       dedupeContent: state.dedupeContent,
       warnLargeThreadScan: state.warnLargeThreadScan,
+      blockPatterns: state.blockPatterns,
+      shortcuts: state.shortcuts,
     });
   }
 
@@ -1916,18 +2243,173 @@
     if (manifest) manifest.checked = state.includeManifest;
     if (dedupeContent) dedupeContent.checked = state.dedupeContent;
     if (warnLargeScan) warnLargeScan.checked = state.warnLargeThreadScan;
+    const blockPatterns = panel.querySelector('[data-setting-block-patterns]');
+    // Never stomp a half-typed pattern list from an unrelated refresh.
+    if (blockPatterns && document.activeElement !== blockPatterns) blockPatterns.value = state.blockPatterns;
+    const blockSummary = panel.querySelector('[data-block-summary]');
+    if (blockSummary) {
+      const patterns = blockPatternList(state.blockPatterns);
+      blockSummary.textContent = patterns.length
+        ? `${patterns.length} ${patterns.length === 1 ? 'fragment' : 'fragments'} active. Fragments under two characters are ignored.`
+        : 'No fragments. Everything found in a reply is indexed.';
+    }
+    panel.querySelectorAll('[data-shortcut]').forEach(button => {
+      if (button.hasAttribute('data-recording')) return;
+      button.textContent = state.shortcuts[button.dataset.shortcut] || 'Not set';
+    });
+  }
+
+  // Cards are self-describing, so their own text is the index to search.
+  function applySettingsSearch(rawQuery) {
+    const panel = document.querySelector(`#${APP_ID} .scg-settings-panel`);
+    if (!panel) return;
+    const query = String(rawQuery || '').trim().toLowerCase();
+    const wrap = panel.querySelector('.scg-settings-search');
+    if (wrap) wrap.toggleAttribute('data-filled', Boolean(query));
+    let matches = 0;
+    panel.querySelectorAll('.scg-settings-card').forEach(card => {
+      const hit = !query || String(card.textContent || '').toLowerCase().includes(query);
+      card.hidden = !hit;
+      if (hit) matches++;
+    });
+    const empty = panel.querySelector('[data-settings-empty]');
+    if (empty) empty.hidden = Boolean(matches) || !query;
+  }
+
+  function shortcutHelpText() {
+    const keys = state.shortcuts;
+    const keyLabel = value => value || 'unbound';
+    return `Gallery: ${keyLabel(keys.search)} search · ${keyLabel(keys.layout)} cycles layout · ${keyLabel(keys.selectAll)} selects this view · ` +
+      'click a checkbox to select, shift-click to extend, ctrl-click to add · ' +
+      `${keyLabel(keys.toggle)} opens or closes · Esc clears the selection, then closes. ` +
+      'Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.';
+  }
+
+  function recordShortcut(button) {
+    const actionId = button.dataset.shortcut;
+    const action = SHORTCUT_ACTIONS.find(entry => entry.id === actionId);
+    if (!action || button.hasAttribute('data-recording')) return;
+    button.setAttribute('data-recording', '');
+    button.textContent = 'Press keys';
+    const stop = () => {
+      button.removeAttribute('data-recording');
+      document.removeEventListener('keydown', onKey, true);
+      button.textContent = state.shortcuts[actionId] || 'Not set';
+    };
+    // Capture, so the recording swallows the chord before anything acts on it.
+    const onKey = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') { stop(); return; }
+      const combo = shortcutCombo(event);
+      if (!combo) return;
+      if (action.requiresModifier && !shortcutHasModifier(combo)) {
+        notify('A gallery-wide shortcut needs Ctrl, Alt, Shift or Cmd so it cannot fire while you read the thread.', 5200);
+        return;
+      }
+      if (shortcutConflict(state.shortcuts, actionId, combo)) {
+        notify(`${combo} is already bound to another gallery shortcut.`, 4500);
+        return;
+      }
+      state.shortcuts = { ...state.shortcuts, [actionId]: combo };
+      persistSettings();
+      stop();
+      notify(`${action.label}: ${combo}`);
+    };
+    document.addEventListener('keydown', onKey, true);
+    button.addEventListener('blur', stop, { once: true });
   }
 
   function openSettingsPanel() {
     const panel = document.querySelector(`#${APP_ID} .scg-settings-panel`);
     if (!panel) return;
     refreshSettingsPanel();
+    const search = panel.querySelector('[data-settings-search]');
+    if (search) search.value = '';
+    applySettingsSearch('');
     panel.classList.add('open');
     panel.querySelector('.scg-settings-dialog')?.focus();
   }
 
   function closeSettingsPanel() {
     document.querySelector(`#${APP_ID} .scg-settings-panel`)?.classList.remove('open');
+  }
+
+  /* ---- Media URL export ----------------------------------------------------
+     The gallery already knows which replies, hosts and authors survived the
+     filters. Handing that list to gallery-dl or yt-dlp is often faster than
+     downloading in the browser, and it is the only way to get at a host this
+     script has no resolver for.
+     ------------------------------------------------------------------------ */
+
+  // A confirmed resolution is the actual file. Anything else exports the host
+  // page instead, which is what an external downloader wants to be given.
+  function mediaExportUrl(item) {
+    const candidate = item && item.resolution && item.resolution.candidate;
+    if (candidate && candidate.status === 'confirmed' && candidate.url) return candidate.url;
+    return normalizeSourceUrl((item && (item.originalLink || item.url || item.thumb)) || '');
+  }
+
+  function mediaExportScope() {
+    const selected = selectedMediaItems();
+    if (selected.length) return { items: selected, label: 'selected' };
+    return { items: visibleItems().filter(isMediaItem), label: 'matched' };
+  }
+
+  function buildMediaExportRows(items) {
+    const seen = new Set();
+    return items.map(item => ({
+      url: mediaExportUrl(item),
+      type: item.type === 'image' ? 'image' : 'video',
+      host: itemSourceHost(item),
+      author: item.author || '',
+      page: Number(item.pageNumber || 0) || 0,
+      reply: String(item.postNumber || ''),
+      postUrl: item.postUrl || '',
+      resolved: item.resolution?.candidate?.status === 'confirmed',
+      downloaded: wasDownloaded(item),
+    })).filter(row => {
+      if (!row.url || seen.has(row.url)) return false;
+      seen.add(row.url);
+      return true;
+    });
+  }
+
+  function exportMediaUrls(format = 'txt') {
+    const scope = mediaExportScope();
+    const rows = buildMediaExportRows(scope.items);
+    if (!rows.length) return notify('There are no images or videos in the current view to export.', 4500);
+    const stamp = timestampForFilename();
+    const name = `${threadFilePrefix()}-${scope.label}-urls-${stamp}`;
+    if (format === 'json') {
+      const payload = {
+        app: 'SimpCity Thread Gallery Timeline',
+        version: APP_VERSION,
+        exportedAt: new Date().toISOString(),
+        thread: { ...threadIdentity(), url: threadBaseUrl(), title: threadTitle() },
+        scope: scope.label,
+        count: rows.length,
+        media: rows,
+      };
+      saveBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `${name}.json`);
+    } else {
+      // `#` comments are ignored by both gallery-dl and yt-dlp batch files.
+      const header = [
+        `# ${threadTitle()}`,
+        `# ${threadBaseUrl()}`,
+        `# ${rows.length} ${scope.label} items exported ${new Date().toISOString()}`,
+        '',
+      ];
+      saveBlob(new Blob([header.concat(rows.map(row => row.url)).join('\n') + '\n'], { type: 'text/plain;charset=utf-8' }), `${name}.txt`);
+    }
+    notify(`Exported ${rows.length} ${scope.label} media ${rows.length === 1 ? 'URL' : 'URLs'}.`);
+  }
+
+  function copyMediaUrls() {
+    const scope = mediaExportScope();
+    const rows = buildMediaExportRows(scope.items);
+    if (!rows.length) return notify('There are no images or videos in the current view to copy.', 4500);
+    return copyText(rows.map(row => row.url).join('\n'), `Copied ${rows.length} ${scope.label} media ${rows.length === 1 ? 'URL' : 'URLs'}.`);
   }
 
   function exportSettings(includeHistory = false) {
@@ -1952,7 +2434,7 @@
       if (!payload || typeof payload !== 'object' || !payload.settings || typeof payload.settings !== 'object') throw new Error('This is not a valid gallery settings file');
       if (payload.downloadHistory && typeof payload.downloadHistory === 'object' && !Array.isArray(payload.downloadHistory)) {
         state.downloadHistory = normalizeDownloadHistory(payload.downloadHistory);
-        persistDownloadHistory();
+        persistDownloadHistory({ replace: true });
       }
       applyPreferences(payload.settings, true);
       updateDownloadedIndicators();
@@ -1976,7 +2458,9 @@
   function clearDownloadHistory() {
     if (state.downloading) return false;
     state.downloadHistory = {};
+    pendingHistoryWrites = {};
     storage.remove(DOWNLOAD_HISTORY_KEY);
+    tabSync.post('download-history-changed');
     state.downloadJobs = [];
     state.downloadProgress = blankDownloadProgress();
     scheduleDownloadUi.dirtyJobs.clear();
@@ -2231,7 +2715,9 @@
     }
     const signature = sniffMediaSignature(bytes);
     if (!signature) throw new Error('The downloaded bytes do not match a supported image or video format');
-    if (signature.mediaType !== expectedMediaType) throw new Error(`Expected ${expectedMediaType}, but the response contains ${signature.mediaType}`);
+    // An empty expectation means the resolver could not know: the bytes still
+    // have to be real media, they just are not held to the thread's guess.
+    if (expectedMediaType && signature.mediaType !== expectedMediaType) throw new Error(`Expected ${expectedMediaType}, but the response contains ${signature.mediaType}`);
     return {
       verified: true,
       blob,
@@ -2245,7 +2731,7 @@
 
   async function fetchValidatedMedia(item, resolution, onProgress) {
     if (!resolution?.url) throw new Error('No media URL is available for validation');
-    const expectedMediaType = item.type === 'image' ? 'image' : 'video';
+    const expectedMediaType = resolution.mediaTypeUnknown ? '' : (item.type === 'image' ? 'image' : 'video');
     const blob = await fetchMediaBlob(resolution.url, resolution.headers, onProgress);
     const validation = await validateMediaBlob(blob, expectedMediaType);
     return {
@@ -2844,9 +3330,9 @@
     return changed;
   }
 
-  function buildViewPages(items) {
+  function buildViewPages(items, perPage = state.perPage) {
     if (!items.length) return [[]];
-    const limit = Number(state.perPage) > 0 ? Number(state.perPage) : items.length;
+    const limit = Number(perPage) > 0 ? Number(perPage) : items.length;
     if (state.groupBy !== 'reply') {
       const pages = [];
       for (let index = 0; index < items.length; index += limit) pages.push(items.slice(index, index + limit));
@@ -2922,6 +3408,123 @@
     grid.replaceChildren();
   }
 
+  /* ---- Playback handoff ----------------------------------------------------
+     A card and the viewer can hold the same video. Opening one while the other
+     played left both running, and the viewer always started from zero. Position
+     is keyed by selectionKey rather than held on an element, so the handoff
+     survives the windowed renderer unmounting the card while the viewer is open.
+     ------------------------------------------------------------------------ */
+
+  function rememberPlaybackPosition(key, video) {
+    if (!key || !video) return;
+    const at = Number(video.currentTime || 0);
+    if (at > 0) state.playbackPositions.set(key, at);
+  }
+
+  function resumePlaybackPosition(video, item) {
+    const start = Number(state.playbackPositions.get(item && item.selectionKey) || 0);
+    if (!video || !(start > 0)) return;
+    const seek = () => {
+      // A live stream reports no usable duration, and resuming within half a
+      // second of the end would just show a finished video.
+      if (!Number.isFinite(video.duration) || start >= video.duration - 0.5) return;
+      try { video.currentTime = start; } catch { /* Seeking is best effort. */ }
+    };
+    // A card is preload="none", so this waits for the play the reader has to
+    // press anyway; the viewer autoplays and is usually ready already.
+    if (video.readyState >= 1) seek();
+    else video.addEventListener('loadedmetadata', seek, { once: true });
+  }
+
+  // Opening the viewer must not leave a second copy of the same media playing
+  // behind it. A third-party embed exposes neither its position nor a pause
+  // control, so it goes back to its placeholder rather than being left running.
+  function suspendGridPlayback() {
+    const grid = document.querySelector(`#${APP_ID} .scg-grid`);
+    if (!grid) return;
+    grid.querySelectorAll('.scg-card[data-key]').forEach(cardNode => {
+      const key = cardNode.dataset.key;
+      const video = cardNode.querySelector('video');
+      if (video) {
+        rememberPlaybackPosition(key, video);
+        try { video.pause(); } catch { /* Detached player. */ }
+      }
+      const embed = cardNode.querySelector('.scg-embed:not(.scg-embed-placeholder)');
+      const item = itemForNode(cardNode, 'key');
+      if (!embed || !item || !embed.querySelector('iframe')) return;
+      state.activePlayers.delete(key);
+      embed.classList.add('scg-embed-placeholder');
+      embed.innerHTML = embedPlaceholderMarkup(item);
+    });
+  }
+
+  /* ---- Embedded players ----------------------------------------------------
+     A third-party iframe is a black box: its position cannot be read, set or
+     handed anywhere, so a card and the viewer holding the same embed could only
+     ever restart each other. Where the resolver has a confirmed file, both play
+     that natively instead and the handoff above applies; the host's own player
+     stays as the fallback for anything that will not resolve or will not play.
+     ------------------------------------------------------------------------ */
+
+  // Two independent ways to play something without leaving the page, and they
+  // are not the same question. An iframe needs the host to allow framing; a
+  // resolved file needs only that the resolver found one. Bunkr refuses to be
+  // framed and so used to render as a bare link out, even though the viewer had
+  // been playing its signed file natively since the resolver landed.
+  function embedIsFramable(item) {
+    if (!item) return false;
+    return Boolean(item.wasFrame) || embedUrl(item.url) !== unwrapSimpcityRedirect(item.url);
+  }
+
+  const playsInPlace = item => embedIsFramable(item) || hasDirectResolver(item);
+
+  function embedFallbackMarkup(item) {
+    if (embedIsFramable(item)) return iframeHtml(item);
+    // Nothing to fall back to but the host's own page.
+    return `<div class="scg-embed-unavailable"><b>This file would not play here</b><a href="${escapeHtml(normalizeSourceUrl(item.url))}" target="_blank" rel="noopener">${icon('external')}<span>Open on ${escapeHtml(hostOf(item.url))}</span></a></div>`;
+  }
+
+  function embedPlayerMarkup(item, resolution) {
+    const direct = resolution || item.resolution?.candidate;
+    if (!item.embedPlaybackFailed && direct?.status === 'confirmed' && direct.url && VIDEO_EXT.test(direct.url)) {
+      return `<video controls preload="metadata" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(direct.url)}"></video>`;
+    }
+    return embedFallbackMarkup(item);
+  }
+
+  async function startEmbeddedPlayer(item, container) {
+    if (!item || !container) return;
+    state.activePlayers.add(item.selectionKey);
+    container.classList.remove('scg-embed-placeholder');
+    container.innerHTML = '<div class="scg-embed-loading"><i></i><span>Resolving player…</span></div>';
+    let direct = null;
+    try { direct = await resolveForDisplay(item); }
+    catch { /* The host's own player is the fallback for every failure here. */ }
+    if (!container.isConnected) return;
+    container.innerHTML = embedPlayerMarkup(item, direct);
+    const video = container.querySelector('video');
+    if (!video) return;
+    resumePlaybackPosition(video, item);
+    video.addEventListener('error', () => {
+      // The signed file would not play inline. Remember that, so a re-render
+      // does not keep retrying it, and hand the card back to the host player.
+      item.embedPlaybackFailed = true;
+      if (container.isConnected) container.innerHTML = embedFallbackMarkup(item);
+    }, { once: true });
+    video.play?.().catch(() => { /* Autoplay may be refused; the controls remain. */ });
+  }
+
+  // Shared with card(), so tearing a player down produces exactly the markup an
+  // unplayed embed would have rendered.
+  function embedPlaceholderMarkup(item) {
+    const key = escapeHtml(item.selectionKey || '');
+    const sourceHost = escapeHtml(hostOf(item.originalLink || item.url || item.postUrl));
+    // The two routes cost the reader different things, so they are named apart:
+    // one loads a stranger's player, the other streams the file itself.
+    const detail = embedIsFramable(item) ? `Load ${sourceHost} player` : `Stream from ${sourceHost}`;
+    return `<button data-load-player="${key}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>${detail}</span></button>`;
+  }
+
   function card(item) {
     const key = escapeHtml(item.selectionKey || '');
     const sourceHost = hostOf(item.originalLink || item.url || item.postUrl);
@@ -2946,11 +3549,10 @@
       return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
     }
     if (item.type === 'video' || item.type === 'embed') {
-      const transformed = embedUrl(item.url);
-      if (item.wasFrame || transformed !== unwrapSimpcityRedirect(item.url)) {
+      if (playsInPlace(item)) {
         const player = state.activePlayers.has(item.selectionKey)
-          ? `<div class="scg-embed">${iframeHtml(item)}</div>`
-          : `<div class="scg-embed scg-embed-placeholder"><button data-load-player="${key}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>Load ${escapeHtml(sourceHost)} player</span></button></div>`;
+          ? `<div class="scg-embed">${embedPlayerMarkup(item)}</div>`
+          : `<div class="scg-embed scg-embed-placeholder">${embedPlaceholderMarkup(item)}</div>`;
         return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}${player}${actions}${meta}</article>`;
       }
       return `<article class="scg-card scg-linkcard ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || 'Open video host')}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${actions}${meta}</article>`;
@@ -3138,6 +3740,17 @@
     }).join('');
   }
 
+  let allClampAnnounced = false;
+  function noteClampedAll(matchedCount, clamped) {
+    if (clamped === allClampAnnounced) return;
+    allClampAnnounced = clamped;
+    if (!clamped) return;
+    const reason = state.groupBy === 'reply' ? 'Reply grouping' : LAYOUT_LABELS[state.layoutMode];
+    notify(`${reason} mounts every card, so Per view: All is paged at ${DEFAULT_SETTINGS.perPage} for these ` +
+      `${Number(matchedCount).toLocaleString()} matches. Flow or Timeline without reply grouping shows them all at once. ` +
+      'Your Per view setting is unchanged.', 8000);
+  }
+
   function updateViewPager(matchedCount) {
     const app = document.getElementById(APP_ID);
     if (!app) return;
@@ -3150,16 +3763,29 @@
     app.querySelector('[data-action="view-prev"]').disabled = state.scanning || state.viewPage <= 1;
     app.querySelector('[data-action="view-next"]').disabled = state.scanning || state.viewPage >= state.viewPages;
     pageSelect.disabled = state.scanning;
-    app.querySelector('[data-page-size]').disabled = state.scanning;
-    app.querySelector('[data-page-size]').value = String(state.perPage);
-    const flowing = app.querySelector('.scg-grid')?.classList.contains('flowing');
+    // A windowed renderer lays out the whole filtered collection, so Per view
+    // changes nothing. Disabled rather than hidden: the stored preference stays
+    // visible, and it is the value that comes back in a paged layout.
+    const virtualized = usesWindowedRenderer();
+    const pageSize = app.querySelector('[data-page-size]');
+    pageSize.disabled = state.scanning || virtualized;
+    pageSize.value = String(state.perPage);
+    const pageSizeLabel = pageSize.closest('label');
+    if (pageSizeLabel) {
+      pageSizeLabel.toggleAttribute('data-inert', virtualized);
+      pageSizeLabel.title = virtualized
+        ? `${LAYOUT_LABELS[state.layoutMode]} renders only what is on screen, so every match is laid out at once.`
+        : '';
+    }
     const indexed = state.items.length;
     const rendered = state.renderedItems.length;
     const count = value => Number(value).toLocaleString();
+    const clamped = !virtualized && state.perPage === 0 && state.appliedPerPage !== 0;
     // Always a fraction of the whole, so filtering never reads as data loss.
-    app.querySelector('.scg-view-summary').textContent = matchedCount === indexed
-      ? (flowing ? `${count(indexed)} shown` : `${count(rendered)} of ${count(indexed)} shown`)
-      : (flowing ? `${count(matchedCount)} of ${count(indexed)} shown` : `${count(rendered)} shown · ${count(matchedCount)} of ${count(indexed)} match`);
+    const summary = virtualized
+      ? (matchedCount === indexed ? `${count(indexed)} matched · virtualized` : `${count(matchedCount)} of ${count(indexed)} matched · virtualized`)
+      : (matchedCount === indexed ? `${count(rendered)} of ${count(indexed)} shown` : `${count(rendered)} shown · ${count(matchedCount)} of ${count(indexed)} match`);
+    app.querySelector('.scg-view-summary').textContent = clamped ? `${summary} · All paged at ${state.appliedPerPage}` : summary;
   }
 
   function emptyStateMarkup() {
@@ -3330,13 +3956,36 @@
     width: 0,
   };
 
-  function isWindowedLayout() {
-    return VIRTUALIZED_LAYOUTS.includes(state.layoutMode);
+  // Flow and Timeline own the grid only when it is a flat list of cards. Reply
+  // grouping needs the sectioned markup path and a scan renders skeletons, so
+  // in both cases the windowed renderer is not what is on screen. Everything
+  // that reasons about virtualization asks this, never the layout alone: the
+  // two answers drifting apart is what let a grouped "All" mount every card
+  // while the size warning stayed silent.
+  function usesWindowedRenderer(overrides = {}) {
+    const layoutMode = overrides.layoutMode === undefined ? state.layoutMode : overrides.layoutMode;
+    const groupBy = overrides.groupBy === undefined ? state.groupBy : overrides.groupBy;
+    const scanning = overrides.scanning === undefined ? state.scanning : overrides.scanning;
+    return VIRTUALIZED_LAYOUTS.includes(layoutMode) && groupBy !== 'reply' && !scanning;
+  }
+
+  // "All" only means something when a renderer bounds the DOM. Windowed layouts
+  // mount a slice whatever the number is, so All is free there. Every other
+  // path mounts each matched card, which a large thread does not survive, so
+  // All is paged for that render only. The stored preference is deliberately
+  // left untouched, so returning to a windowed layout restores it.
+  const UNWINDOWED_ALL_LIMIT = 1200;
+  const UNWINDOWED_ALL_NOTICE = 800;
+
+  function effectivePerPage(matchedCount, perPage = state.perPage) {
+    const size = Number(perPage) || 0;
+    if (size !== 0 || usesWindowedRenderer()) return size;
+    return Number(matchedCount) > UNWINDOWED_ALL_LIMIT ? DEFAULT_SETTINGS.perPage : 0;
   }
 
   function flowGrid() {
     const app = document.getElementById(APP_ID);
-    return app && isWindowedLayout() ? app.querySelector('.scg-grid') : null;
+    return app && usesWindowedRenderer() ? app.querySelector('.scg-grid') : null;
   }
 
   function flowScrollArea() {
@@ -3344,25 +3993,30 @@
     return app ? app.querySelector('.scg-scroll') : null;
   }
 
+  // The same breakpoints and counts the CSS columns used, which still apply to
+  // the paths the window does not own.
+  const MASONRY_COLUMN_CAPS = Object.freeze([
+    Object.freeze({ upTo: 720, columns: 2, compact: 2 }),
+    Object.freeze({ upTo: 1024, columns: 3, compact: 4 }),
+    Object.freeze({ upTo: 1340, columns: 4, compact: 6 }),
+    Object.freeze({ upTo: Infinity, columns: 5, compact: 7 }),
+  ]);
+
+  function masonryColumnCap(windowWidth, compact) {
+    // An unknown width means the widest cap, never the narrowest: guessing
+    // narrow would pin a desktop to two columns.
+    const width = Number(windowWidth) > 0 ? Number(windowWidth) : Infinity;
+    const step = MASONRY_COLUMN_CAPS.find(entry => width <= entry.upTo) || MASONRY_COLUMN_CAPS[MASONRY_COLUMN_CAPS.length - 1];
+    return compact ? step.compact : step.columns;
+  }
+
   function flowLayoutOptions(containerWidth) {
     const scale = Math.min(160, Math.max(70, Number(state.cardScale) || 100)) / 100;
     const gap = state.compact ? 10 : 14;
-    if (state.layoutMode === 'timeline') {
-      // The size slider drives row height here rather than column width: in a
-      // justified layout that is the axis the reader is choosing.
-      const targetHeight = Math.round((state.compact ? 180 : 250) * scale);
-      return {
-        containerWidth,
-        gap,
-        targetHeight,
-        maxRowHeight: Math.round(targetHeight * 1.6),
-        chromeHeight: FLOW_CHROME,
-        assumedRatio: assumedRatio(),
-      };
-    }
     return {
       containerWidth,
       columnWidth: Math.round((state.compact ? 195 : 280) * scale),
+      maxColumns: masonryColumnCap(typeof window === 'undefined' ? 0 : window.innerWidth, state.compact),
       gap,
       chromeHeight: FLOW_CHROME,
       assumedRatio: assumedRatio(),
@@ -3372,8 +4026,7 @@
   function buildFlowModel(containerWidth) {
     const entries = state.renderedItems.map(item => ({ key: item.selectionKey, ratio: itemRatio(item) }));
     const options = flowLayoutOptions(containerWidth);
-    const timeline = state.layoutMode === 'timeline';
-    const packed = timeline ? justifyRows(entries, options) : packColumns(entries, options);
+    const packed = packColumns(entries, options);
     const byKey = new Map();
     let maxCellHeight = 0;
     packed.cells.forEach(cell => {
@@ -3381,9 +4034,8 @@
       if (cell.height > maxCellHeight) maxCellHeight = cell.height;
     });
     // visibleRowRange binary-searches on y, so the index it walks must be
-    // sorted by y. justifyRows already emits row by row; packColumns emits in
-    // item order, which is not.
-    const ordered = timeline ? packed.cells : packed.cells.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+    // sorted by y. packColumns emits in item order, which is not.
+    const ordered = packed.cells.slice().sort((a, b) => a.y - b.y || a.x - b.x);
     return {
       cells: ordered,
       byKey,
@@ -3419,10 +4071,13 @@
       const img = node.querySelector('img[data-resolve-key]');
       if (img) scheduleMediaReveal(item, img);
     }
+    // Scrolling a playing card out of the window and back should not rewind it.
+    resumePlaybackPosition(node.querySelector('video'), item);
   }
 
   function releaseFlowNode(node) {
     node.querySelectorAll('video').forEach(video => {
+      rememberPlaybackPosition(node.dataset.key, video);
       try { video.pause(); } catch { /* Detached player. */ }
       video.removeAttribute('src');
       try { video.load(); } catch { /* Detached player. */ }
@@ -3490,7 +4145,7 @@
   }
 
   function scheduleFlowLayout() {
-    if (flow.frame || !isWindowedLayout()) return;
+    if (flow.frame || !usesWindowedRenderer()) return;
     flow.frame = requestAnimationFrame(() => {
       flow.frame = 0;
       relayoutFlow();
@@ -3498,7 +4153,7 @@
   }
 
   function scheduleFlowWindow() {
-    if (flow.frame || !isWindowedLayout()) return;
+    if (flow.frame || !usesWindowedRenderer()) return;
     flow.frame = requestAnimationFrame(() => {
       flow.frame = 0;
       updateFlowWindow();
@@ -3522,7 +4177,7 @@
     const grid = app && app.querySelector('.scg-grid');
     if (!grid) return;
     flow.resizeObserver = new ResizeObserver(() => {
-      if (!isWindowedLayout()) return;
+      if (!usesWindowedRenderer()) return;
       // Height changes come from our own re-packing; only width matters.
       if (grid.clientWidth === flow.width) return;
       scheduleFlowLayout();
@@ -3569,19 +4224,20 @@
     refreshFilterControls();
     const matched = state.scanning ? [] : visibleItems();
     state.replyIndex = !state.scanning && state.groupBy === 'reply' ? buildReplyIndex(matched) : null;
-    // Reply grouping still needs the sectioned markup path, so flow only takes
-    // over when the grid is a flat list.
-    const virtualized = VIRTUALIZED_LAYOUTS.includes(state.layoutMode) && !state.scanning && state.groupBy !== 'reply';
+    const virtualized = usesWindowedRenderer();
     if (virtualized) {
       state.viewPages = 1;
       state.viewPage = 1;
+      state.appliedPerPage = 0;
       state.renderedItems = matched;
     } else {
-      const pages = buildViewPages(matched);
+      state.appliedPerPage = effectivePerPage(matched.length);
+      const pages = buildViewPages(matched, state.appliedPerPage);
       state.viewPages = pages.length;
       state.viewPage = Math.min(Math.max(1, state.viewPage), state.viewPages);
       state.renderedItems = pages[state.viewPage - 1] || [];
     }
+    noteClampedAll(matched.length, !virtualized && state.perPage === 0 && state.appliedPerPage !== 0);
     const grid = app.querySelector('.scg-grid');
     releaseRenderedMedia();
     grid.classList.toggle('grouped', state.groupBy === 'reply');
@@ -3603,7 +4259,8 @@
     const activityDetail = app.querySelector('[data-activity-detail]');
     if (activityDetail) activityDetail.textContent = state.scanning
       ? `${state.items.length} items indexed · media stays unloaded`
-      : `${LAYOUT_LABELS[state.layoutMode]} · ${matched.length} matched · ${state.items.length} indexed · view ${state.viewPage} of ${state.viewPages}`;
+      : `${LAYOUT_LABELS[state.layoutMode]} · ${matched.length} matched · ${state.items.length} indexed · ` +
+        (virtualized ? 'virtualized' : `view ${state.viewPage} of ${state.viewPages}`);
     setIconButton(app.querySelector('[data-action="thread"]'), state.scanning ? 'close' : 'scan', state.scanning ? 'Cancel scan' : 'Scan entire thread');
     const selectedOnly = app.querySelector('[data-selected-only]');
     selectedOnly.classList.toggle('active', state.selectedOnly);
@@ -3811,7 +4468,7 @@
     stage.onpointercancel = finish;
   }
 
-  function bindViewerVideoLifecycle(video, stage) {
+  function bindViewerVideoLifecycle(video, stage, onError) {
     if (!video) return;
     const stopBuffering = () => stage.classList.remove('viewer-buffering');
     video.addEventListener('loadstart', () => stage.classList.add('viewer-buffering'));
@@ -3820,6 +4477,7 @@
     video.addEventListener('playing', stopBuffering);
     video.addEventListener('error', () => {
       stopBuffering();
+      if (onError) return onError();
       stage.innerHTML = '<div class="scg-viewer-error">This video could not be played here. Use Open source to watch it on the host.</div>';
     }, { once: true });
   }
@@ -3856,6 +4514,8 @@
     const box = document.querySelector(`#${APP_ID} .scg-lightbox`);
     if (!box) return;
     clearTimeout(viewerChromeTimer);
+    const watched = currentViewerItem();
+    rememberPlaybackPosition(watched && watched.selectionKey, box.querySelector('video'));
     state.viewerRenderToken++;
     box.querySelectorAll('video').forEach(video => { try { video.pause(); } catch { /* Detached player. */ } });
     box.querySelectorAll('iframe').forEach(frame => frame.setAttribute('src', 'about:blank'));
@@ -3867,6 +4527,12 @@
     const returnFocus = state.viewerReturnFocus;
     state.viewerReturnFocus = null;
     returnFocus?.focus?.({ preventScroll: true });
+    // The card behind the viewer is still mounted holding its own stale
+    // position. Line it up with what was actually watched.
+    if (!watched || !watched.selectionKey) return;
+    document.querySelectorAll(`#${APP_ID} .scg-card[data-key] video`).forEach(video => {
+      if (video.closest('.scg-card')?.dataset.key === watched.selectionKey) resumePlaybackPosition(video, watched);
+    });
   }
 
   async function renderLightbox() {
@@ -3978,23 +4644,46 @@
       stage.innerHTML = `<video controls autoplay playsinline preload="metadata" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>`;
       const video = stage.querySelector('video');
       bindViewerVideoLifecycle(video, stage);
+      resumePlaybackPosition(video, item);
       bindViewerVideoResolution(video, box, item, stillCurrent);
     } else if (item.wasFrame || embedUrl(item.url) !== unwrapSimpcityRedirect(item.url)) {
       if (!stillCurrent()) return;
-      stage.innerHTML = iframeHtml(item) || '<div class="scg-viewer-error">This host does not expose an embeddable player. Use Open source to watch it on the host.</div>';
-      if (!stage.querySelector('iframe')) {
-        setViewerResolutionStatus(box, 'Unavailable');
-      } else {
+      // Handing the card's position over needs something seekable at both ends,
+      // which a host iframe never is. The resolved file is preferred for exactly
+      // that reason; the embed below still covers everything it cannot play.
+      const mountHostPlayer = () => {
+        if (!stillCurrent()) return;
+        stage.innerHTML = iframeHtml(item) || '<div class="scg-viewer-error">This host does not expose an embeddable player. Use Open source to watch it on the host.</div>';
+        if (!stage.querySelector('iframe')) {
+          setViewerResolutionStatus(box, 'Unavailable');
+          return;
+        }
         setViewerResolutionStatus(box, 'Detecting…');
-        resolveForDisplay(item).then(async direct => {
+        resolveForDisplay(item).then(async resolved => {
           if (!stillCurrent()) return;
-          const dimensions = direct?.url ? await probeVideoDimensions(direct.url) : null;
+          const dimensions = resolved?.url ? await probeVideoDimensions(resolved.url) : null;
           if (!stillCurrent()) return;
-          if (dimensions) updateViewerResolution(box, item, dimensions.width, dimensions.height, '', direct.url);
+          if (dimensions) updateViewerResolution(box, item, dimensions.width, dimensions.height, '', resolved.url);
           else setViewerResolutionStatus(box, 'Host-controlled embed');
         }).catch(() => {
           if (stillCurrent()) setViewerResolutionStatus(box, 'Host-controlled embed');
         });
+      };
+      let direct = null;
+      try { direct = await resolveForDisplay(item); }
+      catch { /* The host player below is the fallback for every failure here. */ }
+      if (!stillCurrent()) return;
+      if (item.embedPlaybackFailed || !direct || direct.status !== 'confirmed' || !direct.url || !VIDEO_EXT.test(direct.url)) {
+        mountHostPlayer();
+      } else {
+        stage.innerHTML = `<video controls autoplay playsinline preload="metadata" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(direct.url)}"></video>`;
+        const video = stage.querySelector('video');
+        bindViewerVideoLifecycle(video, stage, () => {
+          item.embedPlaybackFailed = true;
+          mountHostPlayer();
+        });
+        resumePlaybackPosition(video, item);
+        bindViewerVideoResolution(video, box, item, stillCurrent);
       }
     } else {
       const direct = await resolveForDisplay(item);
@@ -4004,6 +4693,7 @@
         : '<div class="scg-viewer-error">This host does not expose an embeddable player. Use Open source to watch it on the host.</div>';
       const video = stage.querySelector('video');
       bindViewerVideoLifecycle(video, stage);
+      resumePlaybackPosition(video, item);
       bindViewerVideoResolution(video, box, item, stillCurrent);
     }
   }
@@ -4013,6 +4703,7 @@
     const items = filteredMedia.includes(item) ? filteredMedia : mediaItems();
     const index = items.indexOf(item);
     if (index < 0) return;
+    suspendGridPlayback();
     state.viewerItems = items;
     state.viewerReturnFocus = document.activeElement;
     state.lightboxIndex = index;
@@ -4040,6 +4731,7 @@
     state.collapsedReplies.clear();
     state.expandedKeys.clear();
     state.activePlayers.clear();
+    state.playbackPositions.clear();
     state.selectionAnchor = null;
     state.selectedOnly = false;
     state.authorFilter = 'all';
@@ -4881,9 +5573,13 @@
     #${APP_ID} .scg-top:hover{border-color:color-mix(in srgb,var(--scg-accent) 50%,var(--scg-line-strong))}
     #${APP_ID} .scg-top .scg-icon{color:var(--scg-accent)}
 
-    /* Layout: masonry */
-    #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){display:block;columns:5 var(--scg-masonry-width,280px);column-gap:14px}
-    #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:7 var(--scg-masonry-compact-width,195px);column-gap:10px}
+    /* Layout: masonry. The flat grid is placed by the windowed renderer below,
+       so these CSS columns are left for the two paths it does not own: the
+       skeletons during a scan, and reply groups. They have to say so, because
+       [data-layout] out-specifies .flowing and would otherwise re-apply columns
+       to absolutely positioned cards. */
+    #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped):not(.flowing){display:block;columns:5 var(--scg-masonry-width,280px);column-gap:14px}
+    #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped):not(.flowing){columns:7 var(--scg-masonry-compact-width,195px);column-gap:10px}
     #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:5 var(--scg-group-width,250px);column-gap:12px;padding:0}
     #${APP_ID}[data-layout="masonry"].compact .scg-group-grid{columns:7 var(--scg-group-compact-width,180px);column-gap:9px}
     #${APP_ID}[data-layout="masonry"] .scg-card,
@@ -4891,11 +5587,10 @@
     #${APP_ID}[data-layout="masonry"].compact .scg-card,
     #${APP_ID}[data-layout="masonry"].compact .scg-skeleton{margin-bottom:10px}
 
-    /* Layouts: flow and timeline, both windowed. The grid becomes a spacer of
-       known height and every card is placed absolutely, so only what is near
-       the viewport is ever in the DOM. These rules key off the flowing class
-       rather than a layout name, because both windowed layouts want all of
-       them. */
+    /* The windowed masonry grid. It becomes a spacer of known height and every
+       card is placed absolutely, so only what is near the viewport is ever in
+       the DOM. Keyed off the flowing class rather than the layout name, because
+       what matters is which renderer owns the grid, not what it is called. */
     #${APP_ID} .scg-grid.flowing{
       position:relative;display:block;columns:auto;
     }
@@ -4928,10 +5623,10 @@
     /* Absolute positioning already isolates each card; lifting on hover would
        fight the measured geometry. */
     #${APP_ID} .scg-flow-cell:hover{transform:none}
-    /* A justified row gives a tall portrait very little width, and its chrome
-       does not shrink with it. These queries measure the card, not the window,
-       because two cards in the same row can want different answers. */
-    #${APP_ID}[data-layout="timeline"] .scg-flow-cell{container-type:inline-size}
+    /* Compact density at the smallest card size leaves a cell near 140px, and
+       its chrome does not shrink with it. These queries measure the card, not
+       the window, because the two are no longer proportional. */
+    #${APP_ID} .scg-flow-cell{container-type:inline-size}
     #${APP_ID} .scg-flow-cell .scg-actions button>span{
       overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     }
@@ -4973,44 +5668,6 @@
     #${APP_ID}[data-layout="grid"].compact .scg-skeleton{height:var(--scg-grid-compact-height,312px)}
     #${APP_ID}[data-layout="grid"] .scg-skeleton-media{height:auto;min-height:0;flex:1}
 
-    /* Layout: feed */
-    #${APP_ID}[data-layout="feed"] .scg-grid:not(.grouped),
-    #${APP_ID}[data-layout="feed"] .scg-group-grid{
-      display:grid;grid-template-columns:minmax(0,1100px);justify-content:center;gap:14px;columns:auto;
-    }
-    #${APP_ID}[data-layout="feed"] .scg-group-grid{max-width:1140px;margin:auto;padding:0}
-    #${APP_ID}[data-layout="feed"] .scg-card{width:100%;min-width:0;margin:0;break-inside:auto}
-    #${APP_ID}[data-layout="feed"] .scg-media,
-    #${APP_ID}[data-layout="feed"] .scg-linkcard{
-      display:grid;grid-template-columns:minmax(260px,46%) minmax(0,1fr);
-      grid-template-areas:"visual actions" "visual meta";
-      grid-template-rows:1fr auto;min-height:252px;
-    }
-    #${APP_ID}[data-layout="feed"].compact .scg-media,
-    #${APP_ID}[data-layout="feed"].compact .scg-linkcard{min-height:206px}
-    #${APP_ID}[data-layout="feed"] .scg-preview,
-    #${APP_ID}[data-layout="feed"] .scg-card>video,
-    #${APP_ID}[data-layout="feed"] .scg-embed,
-    #${APP_ID}[data-layout="feed"] .scg-host{
-      grid-area:visual;width:100%;height:100%;min-height:252px;border-right:1px solid var(--scg-line);
-    }
-    #${APP_ID}[data-layout="feed"].compact .scg-preview,
-    #${APP_ID}[data-layout="feed"].compact .scg-card>video,
-    #${APP_ID}[data-layout="feed"].compact .scg-embed,
-    #${APP_ID}[data-layout="feed"].compact .scg-host{min-height:206px}
-    #${APP_ID}[data-layout="feed"] .scg-preview{overflow:hidden}
-    #${APP_ID}[data-layout="feed"] .scg-preview img,
-    #${APP_ID}[data-layout="feed"] .scg-card>video{width:100%;height:100%;max-height:540px;object-fit:contain}
-    #${APP_ID}[data-layout="feed"] .scg-embed{aspect-ratio:auto}
-    #${APP_ID}[data-layout="feed"] .scg-host{justify-content:center;padding:44px 24px 24px}
-    #${APP_ID}[data-layout="feed"] .scg-actions{grid-area:actions;align-self:end;border-top:0;border-left:1px solid var(--scg-line);background:transparent}
-    #${APP_ID}[data-layout="feed"] .scg-meta{grid-area:meta;border-left:1px solid var(--scg-line);border-top:1px solid var(--scg-line)}
-    #${APP_ID}[data-layout="feed"] .scg-textcard{max-width:900px;justify-self:center}
-    #${APP_ID}[data-layout="feed"] .scg-textcard p{-webkit-line-clamp:12}
-    #${APP_ID}[data-layout="feed"] .scg-skeleton{display:grid;grid-template-columns:minmax(260px,46%) minmax(0,1fr);height:252px;margin:0}
-    #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:100%;grid-row:1/4}
-    #${APP_ID}[data-layout="feed"] .scg-skeleton-line{align-self:end}
-    #${APP_ID}[data-layout="feed"] .scg-grid.grouped,
     #${APP_ID}[data-layout="grid"] .scg-grid.grouped{display:block;columns:auto}
 
     /* ---- 10. Cards -------------------------------------------- */
@@ -5045,8 +5702,9 @@
     }
     #${APP_ID}.compact .scg-card img,#${APP_ID}.compact .scg-card video{max-height:430px}
     /* A known ratio reserves the box before the image arrives, so loading one
-       image no longer re-balances every masonry column. */
-    #${APP_ID}[data-layout="masonry"] .scg-card .scg-preview img{
+       image no longer re-balances every masonry column. Scoped away from the
+       windowed grid, where the cell already has a measured height to fill. */
+    #${APP_ID}[data-layout="masonry"] .scg-grid:not(.flowing) .scg-card .scg-preview img{
       aspect-ratio:var(--scg-ratio,0.72);height:auto;max-height:none;object-fit:cover;
     }
 
@@ -5176,6 +5834,31 @@
 
     #${APP_ID} .scg-embed{position:relative;width:100%;aspect-ratio:16/9;background:var(--scg-well)}
     #${APP_ID} .scg-embed iframe{display:block;width:100%;height:100%;border:0}
+    #${APP_ID} .scg-embed-unavailable{
+      display:grid;place-items:center;gap:9px;width:100%;height:100%;min-height:160px;
+      padding:18px;text-align:center;
+      color:var(--scg-muted);font-size:var(--scg-fs-sm);
+    }
+    #${APP_ID} .scg-embed-unavailable b{color:var(--scg-text);font-size:var(--scg-fs-md)}
+    #${APP_ID} .scg-embed-unavailable a{
+      display:inline-flex;align-items:center;gap:7px;
+      min-height:34px;padding:7px 12px;
+      border:1px solid var(--scg-accent-line);border-radius:var(--scg-r-md);
+      background:var(--scg-accent-soft);color:var(--scg-accent);
+      text-decoration:none;font-weight:550;
+    }
+    #${APP_ID} .scg-embed-unavailable a:hover{border-color:var(--scg-accent)}
+    #${APP_ID} .scg-embed-loading{
+      display:grid;place-items:center;gap:9px;width:100%;height:100%;min-height:160px;
+      grid-auto-flow:column;
+      color:var(--scg-muted);font-size:var(--scg-fs-sm);
+    }
+    #${APP_ID} .scg-embed-loading i{
+      display:block;width:17px;height:17px;
+      border:2px solid color-mix(in srgb,var(--scg-text) 20%,transparent);
+      border-top-color:var(--scg-accent);border-radius:99px;
+      animation:scg-viewer-spin .75s linear infinite;
+    }
     #${APP_ID} .scg-embed-placeholder{
       display:grid;place-items:center;min-height:160px;
       background:radial-gradient(circle at 50% 6%,var(--scg-surface-3),var(--scg-well) 72%);
@@ -5482,6 +6165,53 @@
       background:var(--scg-danger-soft);color:var(--scg-danger);
     }
     #${APP_ID} .scg-settings-body{overflow:auto;padding:16px}
+    #${APP_ID} .scg-settings-search{
+      display:flex;align-items:center;gap:9px;margin:0 0 14px;padding:0 12px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);background:var(--scg-surface);
+    }
+    #${APP_ID} .scg-settings-search .scg-icon{width:16px;height:16px;flex:none;color:var(--scg-muted)}
+    #${APP_ID} .scg-settings-search input{
+      flex:1;min-width:0;min-height:38px;padding:0;
+      border:0;background:none;color:var(--scg-text);font-size:var(--scg-fs-md);
+    }
+    #${APP_ID} .scg-settings-search input:focus{outline:none}
+    #${APP_ID} .scg-settings-search input::-webkit-search-cancel-button{display:none}
+    #${APP_ID} .scg-settings-search button{
+      display:none;align-items:center;justify-content:center;flex:none;
+      width:24px;height:24px;padding:0;border:0;border-radius:99px;
+      background:var(--scg-surface-3);color:var(--scg-muted);cursor:pointer;
+    }
+    #${APP_ID} .scg-settings-search button .scg-icon{width:12px;height:12px;color:inherit}
+    #${APP_ID} .scg-settings-search[data-filled] button{display:inline-flex}
+    #${APP_ID} .scg-settings-empty{
+      margin:0 0 14px;padding:14px;border:1px dashed var(--scg-line);border-radius:var(--scg-r-md);
+      color:var(--scg-muted);font-size:var(--scg-fs-sm);text-align:center;
+    }
+    #${APP_ID} .scg-settings-card[hidden]{display:none}
+    #${APP_ID} .scg-viewbar label[data-inert]{opacity:.5}
+    #${APP_ID} .scg-shortcut-rows{display:grid;gap:7px}
+    #${APP_ID} .scg-shortcut-row{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;
+      color:var(--scg-text-soft);font-size:var(--scg-fs-sm);
+    }
+    #${APP_ID} .scg-shortcut-key{
+      flex:none;min-width:118px;min-height:32px;padding:5px 11px;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
+      background:var(--scg-surface);color:var(--scg-text);
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+      font-size:var(--scg-fs-sm);font-weight:600;text-align:center;cursor:pointer;
+    }
+    #${APP_ID} .scg-shortcut-key:hover{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-shortcut-key[data-recording]{
+      border-color:var(--scg-accent-line);background:var(--scg-accent-soft);color:var(--scg-accent);
+    }
+    #${APP_ID} .scg-block-patterns{
+      width:100%;min-height:84px;padding:9px 11px;resize:vertical;
+      border:1px solid var(--scg-line);border-radius:var(--scg-r-md);
+      background:var(--scg-surface);color:var(--scg-text);
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--scg-fs-sm);line-height:1.6;
+    }
+    #${APP_ID} .scg-block-summary{margin-top:8px;color:var(--scg-muted);font-size:var(--scg-fs-xs)}
     #${APP_ID} .scg-settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
     #${APP_ID} .scg-settings-card{
       padding:15px;border:1px solid var(--scg-line);border-radius:var(--scg-r-lg);
@@ -5940,8 +6670,8 @@
     @media(max-width:1340px){
       #${APP_ID} .scg-header{grid-template-columns:auto minmax(0,1fr) auto;row-gap:10px}
       #${APP_ID} .scg-controls{grid-column:1/-1;order:3}
-      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:4 var(--scg-masonry-width,280px)}
-      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:6 var(--scg-masonry-compact-width,195px)}
+      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped):not(.flowing){columns:4 var(--scg-masonry-width,280px)}
+      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped):not(.flowing){columns:6 var(--scg-masonry-compact-width,195px)}
       #${APP_ID} .scg-lightbox .scg-next{right:342px}
     }
 
@@ -5957,8 +6687,8 @@
       #${APP_ID} .scg-scroll{inset:10px 10px 0;padding:14px 12px 136px}
       #${APP_ID} .scg-activitybar{width:calc(100% - 20px);bottom:10px;flex-wrap:wrap}
       #${APP_ID} .scg-top{right:20px;bottom:122px}
-      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:3 var(--scg-masonry-width,280px)}
-      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:4 var(--scg-masonry-compact-width,195px)}
+      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped):not(.flowing){columns:3 var(--scg-masonry-width,280px)}
+      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped):not(.flowing){columns:4 var(--scg-masonry-compact-width,195px)}
       #${APP_ID} .scg-settings-grid{grid-template-columns:1fr}
       #${APP_ID} .scg-settings-card.full{grid-column:auto}
       #${APP_ID} .scg-download-settings{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -6012,8 +6742,8 @@
       #${APP_ID} .scg-scroll{inset:8px 8px 0;padding:12px 10px 160px;border-radius:var(--scg-r-md) var(--scg-r-md) 0 0}
       #${APP_ID} .scg-top{right:14px;bottom:146px;padding:8px 12px}
       #${APP_ID} .scg-top>span{display:none}
-      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped){columns:2 var(--scg-masonry-width,280px);column-gap:8px}
-      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped){columns:2 var(--scg-masonry-compact-width,195px);column-gap:8px}
+      #${APP_ID}[data-layout="masonry"] .scg-grid:not(.grouped):not(.flowing){columns:2 var(--scg-masonry-width,280px);column-gap:8px}
+      #${APP_ID}[data-layout="masonry"].compact .scg-grid:not(.grouped):not(.flowing){columns:2 var(--scg-masonry-compact-width,195px);column-gap:8px}
       #${APP_ID}[data-layout="masonry"] .scg-group-grid{columns:2 var(--scg-group-width,250px);padding:0}
       #${APP_ID}[data-layout="masonry"].compact .scg-group-grid{columns:2 var(--scg-group-compact-width,180px);padding:0}
       #${APP_ID}[data-layout="grid"] .scg-grid:not(.grouped),
@@ -6022,18 +6752,6 @@
       #${APP_ID}[data-layout="grid"].compact .scg-group-grid{grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--scg-grid-compact-min,180px)),1fr));gap:8px}
       #${APP_ID}[data-layout="grid"] .scg-card{height:var(--scg-grid-height,386px)}
       #${APP_ID}[data-layout="grid"].compact .scg-card{height:var(--scg-grid-compact-height,312px)}
-      #${APP_ID}[data-layout="feed"] .scg-media,
-      #${APP_ID}[data-layout="feed"] .scg-linkcard,
-      #${APP_ID}[data-layout="feed"].compact .scg-media,
-      #${APP_ID}[data-layout="feed"].compact .scg-linkcard{display:block;min-height:0}
-      #${APP_ID}[data-layout="feed"] .scg-preview,
-      #${APP_ID}[data-layout="feed"] .scg-card>video,
-      #${APP_ID}[data-layout="feed"] .scg-embed,
-      #${APP_ID}[data-layout="feed"] .scg-host{height:auto;min-height:182px;border-right:0}
-      #${APP_ID}[data-layout="feed"] .scg-actions,
-      #${APP_ID}[data-layout="feed"] .scg-meta{border-left:0}
-      #${APP_ID}[data-layout="feed"] .scg-skeleton{display:block;height:auto}
-      #${APP_ID}[data-layout="feed"] .scg-skeleton-media{height:182px}
       #${APP_ID} .scg-badge span{display:none}
       #${APP_ID} .scg-reply-group>header a>span{display:none}
       #${APP_ID} .scg-reply-identity>span:nth-of-type(3){display:none}
@@ -6190,6 +6908,11 @@
               <button data-action="theme" role="menuitem">${iconWell('palette')}<span>Theme</span></button>
               <button data-action="density" role="menuitem">${iconWell('layout')}<span>Compact cards</span></button>
               <div class="scg-menu-sep" role="separator"></div>
+              <div class="scg-menu-label" role="presentation">Export media list</div>
+              <button data-action="copy-urls" role="menuitem">${iconWell('copy')}<span>Copy URLs</span></button>
+              <button data-action="export-urls-txt" role="menuitem">${iconWell('download')}<span>Save URL list (.txt)</span></button>
+              <button data-action="export-urls-json" role="menuitem">${iconWell('download')}<span>Save URL list (.json)</span></button>
+              <div class="scg-menu-sep" role="separator"></div>
               <div class="scg-menu-label" role="presentation">Help</div>
               <button data-action="shortcuts" role="menuitem">${iconWell('keyboard')}<span>Keyboard shortcuts</span></button>
             </div>
@@ -6272,10 +6995,15 @@
     <div class="scg-settings-panel" role="dialog" aria-modal="true" aria-label="Settings and diagnostics">
       <section class="scg-settings-dialog" tabindex="-1">
         <header class="scg-settings-head"><div>${icon('settings')}<div><h2>Settings and diagnostics</h2><p>Local preferences, portability and troubleshooting. Nothing leaves this device.</p></div></div><button class="scg-settings-close" data-action="close-settings" aria-label="Close settings">${iconWell('close', 'scg-icon-well-danger')}</button></header>
-        <div class="scg-settings-body"><div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Flow and Timeline render only what is on screen, which is what makes them suitable for very large threads.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+        <div class="scg-settings-body">
+          <div class="scg-settings-search">${icon('search')}<input type="search" data-settings-search placeholder="Search settings" aria-label="Search settings" aria-describedby="scg-tl-settings-empty"><button type="button" data-action="clear-settings-search" aria-label="Clear the settings search">${icon('close')}</button></div>
+          <p class="scg-settings-empty" id="scg-tl-settings-empty" data-settings-empty role="status" hidden>No settings match that search.</p>
+          <div class="scg-settings-grid">
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Flow and Timeline render only what is on screen, which is what makes them suitable for very large threads. Grouping by reply uses the paged renderer instead, so Per view applies again.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('keyboard')} Keyboard shortcuts</h3><p>Click a chord and press the keys you want. Escape cancels a recording. Shortcuts never fire while you are typing in a field, and the media viewer's own keys are fixed.</p><div class="scg-shortcut-rows">${SHORTCUT_ACTIONS.map(action => `<div class="scg-shortcut-row"><span>${escapeHtml(action.label)}</span><button type="button" class="scg-shortcut-key" data-shortcut="${action.id}" aria-label="Change the shortcut for ${escapeHtml(action.label)}"></button></div>`).join('')}</div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="reset-shortcuts">${iconWell('reset')}<span>Restore defaults</span></button></div></section>
+          <section class="scg-settings-card"><h3>${icon('filter')} Ignore list</h3><p>Media whose URL contains any of these fragments is never indexed, so it costs no card and no memory. One fragment per line or separated by commas. Editing this drops anything already indexed that matches.</p><textarea class="scg-block-patterns" data-setting-block-patterns rows="4" spellcheck="false" placeholder="signature.example.com&#10;/avatars/&#10;banner-"></textarea><div class="scg-block-summary" data-block-summary role="status"></div></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
           <section class="scg-settings-card"><h3>${icon('upload')} Backup and restore</h3><p>Export preferences as JSON or restore a previous backup.</p><label class="scg-settings-check"><input type="checkbox" data-export-history><span>Include download history. This contains thread and media references.</span></label><div class="scg-settings-actions"><button data-action="export-settings">${iconWell('download')}<span>Export</span></button><button data-action="import-settings">${iconWell('upload')}<span>Import</span></button><input class="scg-settings-file" data-settings-file type="file" accept="application/json,.json"></div></section>
           <section class="scg-settings-card full"><h3>${icon('info')} Diagnostics</h3><p>A local, URL-scrubbed summary for troubleshooting. Nothing is transmitted automatically.</p><div class="scg-diag-grid"><div class="scg-diag-stat"><span>Version</span><b data-diag-version></b></div><div class="scg-diag-stat"><span>Thread pages</span><b data-diag-pages></b></div><div class="scg-diag-stat"><span>Indexed items</span><b data-diag-items></b></div><div class="scg-diag-stat"><span>Download history</span><b data-diag-history></b></div><div class="scg-diag-stat"><span>Resolver failures</span><b data-diag-resolvers></b></div><div class="scg-diag-stat"><span>Download failures</span><b data-diag-downloads></b></div><div class="scg-diag-stat"><span>Scan failures</span><b data-diag-scans></b></div><div class="scg-diag-stat"><span>Storage</span><b data-diag-storage></b></div></div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="copy-debug">${iconWell('copy')}<span>Copy debug report</span></button><button data-action="clear-diagnostics">${iconWell('reset')}<span>Clear diagnostics</span></button></div></section>
@@ -6406,8 +7134,11 @@
     if (event.target.closest?.('.scg-menu-wrap, .scg-refine-wrap')) return;
     closeDisclosures();
   }, true);
-  app.querySelector('[data-action="shortcuts"]').onclick = () => notify('Gallery: / search · L cycles layout · A selects this view · click a checkbox to select, shift-click to extend, ctrl-click to add · Shift+G opens or closes · Esc clears the selection, then closes. Viewer: ← → navigate · wheel or + − zoom · 0 fit · I details · F fullscreen · Space play or pause · D download · S select.', 11000);
+  app.querySelector('[data-action="shortcuts"]').onclick = () => notify(shortcutHelpText(), 11000);
   app.querySelector('[data-action="shortcuts"]').addEventListener('click', () => closeDisclosures());
+  app.querySelector('[data-action="copy-urls"]').onclick = () => { closeDisclosures(); copyMediaUrls(); };
+  app.querySelector('[data-action="export-urls-txt"]').onclick = () => { closeDisclosures(); exportMediaUrls('txt'); };
+  app.querySelector('[data-action="export-urls-json"]').onclick = () => { closeDisclosures(); exportMediaUrls('json'); };
   app.querySelector('[data-action="settings"]').onclick = () => {
     closeDisclosures();
     controllers.settings.open();
@@ -6454,6 +7185,29 @@
   };
   app.querySelector('.scg-settings-panel').onclick = event => {
     if (event.target.classList.contains('scg-settings-panel')) controllers.settings.close();
+  };
+  const settingsSearch = app.querySelector('[data-settings-search]');
+  settingsSearch.oninput = () => applySettingsSearch(settingsSearch.value);
+  app.querySelector('[data-action="clear-settings-search"]').onclick = () => {
+    settingsSearch.value = '';
+    applySettingsSearch('');
+    settingsSearch.focus();
+  };
+  const blockPatternsField = app.querySelector('[data-setting-block-patterns]');
+  blockPatternsField.onchange = () => {
+    commitState({ blockPatterns: String(blockPatternsField.value || '').slice(0, 2000) }, { persist: true, shellOnly: true });
+    const removed = purgeBlockedItems();
+    render();
+    notify(removed
+      ? `Ignore list updated. ${removed} indexed ${removed === 1 ? 'item was' : 'items were'} dropped.`
+      : 'Ignore list updated. It applies to everything indexed from now on.');
+  };
+  app.querySelectorAll('[data-shortcut]').forEach(button => {
+    button.onclick = () => recordShortcut(button);
+  });
+  app.querySelector('[data-action="reset-shortcuts"]').onclick = () => {
+    commitState({ shortcuts: normalizedShortcuts(DEFAULT_SHORTCUTS) }, { persist: true, shellOnly: true });
+    notify('Keyboard shortcuts restored to their defaults.');
   };
   app.querySelector('[data-action="export-settings"]').onclick = () => exportSettings(app.querySelector('[data-export-history]').checked);
   const settingsFile = app.querySelector('[data-settings-file]');
@@ -6515,12 +7269,16 @@
   app.querySelector('[data-view-page]').onchange = event => changeViewPage(event.target.value);
   app.querySelector('[data-page-size]').onchange = event => {
     const perPage = Number(event.target.value);
-    commitState({ perPage, viewPage: 1 }, { persist: true });
     // Windowed layouts already ignore pagination. Everywhere else "All" means
-    // every card really is in the DOM, which is worth saying once.
-    if (perPage === 0 && !isWindowedLayout() && state.renderedItems.length > 800) {
-      notify(`All ${state.renderedItems.length.toLocaleString()} matches are now in the page. Flow or Timeline render only what is on screen.`, 6500);
+    // every card really is in the DOM, which is worth saying before it happens:
+    // on a phone the mount is the part that hurts, and warning afterwards is
+    // too late to decline. Above the clamp limit the fallback speaks instead,
+    // so the two notices never both fire.
+    const matched = visibleItems().length;
+    if (perPage === 0 && !usesWindowedRenderer() && matched > UNWINDOWED_ALL_NOTICE && matched <= UNWINDOWED_ALL_LIMIT) {
+      notify(`All ${matched.toLocaleString()} matches are about to be put in the page. Flow or Timeline render only what is on screen.`, 6500);
     }
+    commitState({ perPage, viewPage: 1 }, { persist: true });
   };
   app.querySelectorAll('[data-card-scale]').forEach(slider => {
     slider.oninput = event => {
@@ -6563,13 +7321,7 @@
     }
     const player = event.target.closest('[data-load-player]');
     if (player) {
-      const item = itemForNode(player, 'loadPlayer');
-      const container = player.closest('.scg-embed');
-      if (item && container) {
-        state.activePlayers.add(item.selectionKey);
-        container.classList.remove('scg-embed-placeholder');
-        container.innerHTML = iframeHtml(item);
-      }
+      startEmbeddedPlayer(itemForNode(player, 'loadPlayer'), player.closest('.scg-embed'));
       return;
     }
     const expand = event.target.closest('[data-expand]');
@@ -6666,27 +7418,53 @@
       }
       return;
     }
+    // One normalized chord per event, matched against the bindings, so a
+    // rebound key needs no second place to be taught about it.
+    const combo = shortcutCombo(event);
+    const bound = combo ? SHORTCUT_ACTIONS.find(action => state.shortcuts[action.id] === combo)?.id : '';
     if (event.key === 'Escape' && app.classList.contains('open')) {
       // Escape unwinds one layer at a time: a selection first, the gallery only
       // once there is nothing left to discard.
       if (state.selected.size) clearSelectionAndRefresh();
       else closeApp();
-    } else if (event.key === '/' && app.classList.contains('open')) {
-      event.preventDefault();
-      app.querySelector('[data-search]').focus();
-    } else if (!event.shiftKey && event.key.toLowerCase() === 'l' && app.classList.contains('open')) {
-      event.preventDefault();
-      cycleLayoutMode(1, true);
-    } else if (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a' && app.classList.contains('open')) {
-      event.preventDefault();
-      selectItems(mediaItems());
-      if (state.selectedOnly) render();
-    } else if (event.shiftKey && event.key.toLowerCase() === 'g') {
+    } else if (bound === 'toggle') {
       event.preventDefault();
       if (app.classList.contains('open')) closeApp();
       else openApp();
-    } else if (event.key === 'Tab' && app.classList.contains('open')) {
+    } else if (!app.classList.contains('open')) {
+      // Everything below is a control for a gallery that is on screen.
+    } else if (bound === 'search') {
+      event.preventDefault();
+      app.querySelector('[data-search]').focus();
+    } else if (bound === 'layout') {
+      event.preventDefault();
+      cycleLayoutMode(1, true);
+    } else if (bound === 'selectAll') {
+      event.preventDefault();
+      selectItems(mediaItems());
+      if (state.selectedOnly) render();
+    } else if (event.key === 'Tab') {
       containFocus(app, event);
     }
+  });
+
+  /* ---- Cross-tab and unload wiring -----------------------------------------
+     Registered last so every handler it reaches is already defined.
+     ------------------------------------------------------------------------ */
+
+  // Saved, cleared and imported all invalidate the same way; the receiver goes
+  // back to storage rather than trusting anything that arrived on the channel.
+  tabSync.on('download-history-changed', reloadDownloadHistory);
+  tabSync.start();
+
+  // Downloads live only in this page's memory, so a reload during one loses
+  // partially fetched files and any ZIP that has not been written yet.
+  window.addEventListener('beforeunload', event => {
+    const active = state.downloading || state.downloadJobs.some(job => ['queued', 'preparing', 'downloading', 'packing'].includes(job.status));
+    if (!active) return undefined;
+    event.preventDefault();
+    // Browsers show their own wording; a non-empty return value is the signal.
+    event.returnValue = 'Downloads are still running. Leaving now cancels them.';
+    return event.returnValue;
   });
 })();

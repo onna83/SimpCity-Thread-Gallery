@@ -130,9 +130,13 @@ function boot() {
     removeItem: key => store.delete(key),
   };
 
+  const windowListeners = [];
   const sandbox = {
     document,
     localStorage,
+    // The module body registers an unload guard on the window itself.
+    addEventListener: (type, handler) => windowListeners.push({ type, handler }),
+    removeEventListener() {},
     location: new URL('https://simpcity.cr/threads/example.1/page-2'),
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
@@ -162,7 +166,7 @@ function boot() {
   sandbox.location.href = 'https://simpcity.cr/threads/example.1/page-2';
 
   vm.runInNewContext(source, sandbox, { filename: 'SimpCity-Thread-Gallery-Timeline.user.js' });
-  return byId;
+  return Object.assign(byId, { windowListeners });
 }
 
 test('the userscript module body runs to completion on a bare page', () => {

@@ -12,14 +12,17 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 
 - Scans the current page, a chosen page, or an entire thread.
 - Keeps author, page, reply, post, caption, source, and host provenance.
-- Shows masonry, uniform-grid, and feed layouts with search and filters.
+- Shows masonry and uniform-grid layouts with search and filters. Masonry renders only what is on screen.
 - Collapses individual reply groups or all groups in the current filtered results.
 - Opens images and supported videos in a keyboard-friendly lightbox.
-- Resolves original images and direct video files where a host exposes them.
+- Resolves original images and direct video files where a host exposes them, including Bunkr's signed CDN URLs.
 - Selects downloadable media for validated, cancellable ZIP downloads.
 - Selects all downloadable media in a reply with checked and indeterminate group state.
 - Splits large archives, records CRC32 values, merges byte-identical files, and can add `manifest.csv`.
-- Stores preferences and verified download history locally.
+- Exports the current view's media URLs as `.txt` or `.json` for gallery-dl or yt-dlp.
+- Ignores media whose URL matches a fragment you list, before it is ever indexed.
+- Rebinds the gallery-wide keyboard shortcuts.
+- Stores preferences and verified download history locally, safely across multiple open tabs.
 - Supports desktop browsers and phone layouts.
 
 ## Install with Tampermonkey
@@ -37,10 +40,12 @@ This fork uses a **separate script identity** throughout, which is what lets bot
 |---|---|---|
 | `@name` | `SimpCity Thread Gallery` | `SimpCity Thread Gallery Timeline` |
 | `@namespace` | `local.simpcity.gallery.hybrid` | `local.simpcity.gallery.timeline` |
-| Version line | 0.9.7.x | 0.10.x |
+| Version line | 0.9.7.x | 0.12.x |
 | Settings + history | `sc-thread-gallery-*` | `sc-thread-gallery-timeline-*` |
 
 Storage is deliberately **not** shared. The fork starts with an empty download history, so items you already downloaded show as un-downloaded here until it builds its own record.
+
+> **Do not leave both scripts enabled on the same thread.** Separate identities let both be *installed* at once; they do not let both *run* on one page. Each registers its own launcher button, its own document-level keyboard handler, and its own body-scroll lock, so together you get two launchers, chords firing in both galleries, and a scroll lock that only half releases. There is no runtime coordination between them and none is planned for this concept. Keep one enabled at a time in Tampermonkey, or scope them to different `@match` domains.
 
 ## Install from GreasyFork
 
@@ -87,7 +92,7 @@ The project has no bundler, framework, runtime dependency, external font, or run
 
 ```powershell
 node --check SimpCity-Thread-Gallery-Timeline.user.js
-node --test tests/core.test.cjs
+node --test tests/core.test.cjs tests/boot.test.cjs
 ```
 
 ## Screenshots

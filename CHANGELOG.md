@@ -2,6 +2,58 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.12.0 (timeline fork — unreleased)
+
+- **Cut the layout picker from five to two: Masonry and Grid.** Flow was Masonry computed rather than CSS-balanced — the same picture at the same column width, differing only in that it was virtualized, which is an implementation detail that never belonged in a picker. Masonry *is* that renderer now, so the default layout windows itself and a several-thousand-item thread no longer mounts every card. Timeline (justified rows) and Feed (one per row) are gone; a stored layout that no longer exists falls back to Masonry.
+- Computed packing fills the available width, which would have made the default denser than it has always been. The column caps the CSS carried (5/4/3/2 comfortable, 7/6/4/2 compact, by the same breakpoints) are now honoured by the packer, so folding the two together did not change how Masonry looks.
+- Masonry's CSS columns had to be told when *not* to apply: `[data-layout="masonry"]` out-specifies `.flowing` and would have re-imposed columns and an aspect-ratio height on absolutely positioned cards. What survives of them serves the two paths the window does not own — the skeletons during a scan, and reply groups.
+- The card-size slider is no longer disabled by layout (that was Feed only), and the container queries that shrink card chrome now follow the cell rather than a retired layout — compact density at the smallest card size is what makes a cell narrow now.
+
+## 0.11.5 (timeline fork — unreleased)
+
+- **Bunkr videos now play on the card instead of only linking out.** A card decided whether it could play something by asking whether the host registry had an iframe URL for it. Bunkr has none, because it refuses to be framed — so it rendered as a bare "Open video host" link even though the viewer had been playing its signed file natively since the resolver landed in 0.11.0. Framing and resolving are separate questions and are now asked separately: a card plays in place when either a host player can be framed or the resolver can produce a file, so Bunkr gets a Play button that streams the signed CDN URL. Its placeholder says "Stream from bunkr.cr" rather than "Load bunkr.cr player", since no third-party player is involved.
+- A host that cannot be framed and whose file will not play inline now shows a short panel with a link to the host, rather than an iframe that would only render blank.
+
+## 0.11.4 (timeline fork — unreleased)
+
+- **Fixed an embedded video restarting when opened in the viewer.** 0.11.3 stopped the card's player but could not carry its position, because both the card and the viewer mounted the host's own cross-origin iframe and an iframe's position cannot be read, set, or handed anywhere. Where the resolver produces a confirmed video file — Turbo and Bunkr, today — both ends now play that file natively instead, so the position handoff applies: the viewer picks up where the card was, and closing returns it. The host's player remains the fallback for anything that does not resolve, does not resolve to a video, or refuses to play inline, and a file that fails once is not retried on later renders.
+- Scrolling a playing card out of a windowed layout and back no longer rewinds it.
+
+## 0.11.3 (timeline fork — unreleased)
+
+- **Fixed a card's video continuing to play behind the viewer.** Opening the viewer never touched the grid, so pressing View on a playing video left two copies running — the card underneath and a fresh viewer player starting from zero. The viewer now stops the grid on the way in and inherits the position, so it picks up where the card was. Closing hands the position back, so returning to the card and pressing play resumes rather than restarting. Embedded third-party players were affected too and could not simply be paused: they expose neither a position nor a pause control, so they are returned to their "Play video" placeholder instead.
+
+## 0.11.2 (timeline fork — unreleased)
+
+Second review pass on the 0.11.x fixes.
+
+- **Fixed the Bunkr resolver claiming album links.** 0.11.1 routed every Bunkr URL into the single-file resolver, so an album link wrapped around a thumbnail returned "album page rather than a single file" instead of falling through to the ordinary image-page and thumbnail paths it used before Bunkr support existed. Both resolver branches now require a valid `/f/` id.
+- **Moved the "All" size notice ahead of the render it warns about.** It fired after `commitState` had already mounted every card, which is precisely when a phone stalls, and it counted the previous page's rows rather than what was about to mount. It now counts the matched set, warns first, and is disjoint from the 1,200 clamp so the two notices never both fire. Both thresholds are named constants.
+
+## 0.11.1 (timeline fork — unreleased)
+
+Review fixes on 0.11.0. No interface redesign and no new features.
+
+- **Fixed Group by Reply silently bypassing virtualization.** `isWindowedLayout()` answered on the layout alone while the renderer applied stricter conditions, so Flow or Timeline plus Group by Reply plus Per view: All mounted every matched card with the size warning suppressed. One predicate, `usesWindowedRenderer()`, now accounts for layout, reply grouping and scanning, and is the single source for rendering, the All warning, pager visibility, Per view state, status text and the settings copy. When nothing is bounding the DOM, All is paged at the default size for that render only — the stored preference is never rewritten, so returning to an ungrouped windowed layout restores it — and the fallback announces itself once.
+- **Fixed Bunkr files being downloadable individually but never selectable.** `isDownloadableMedia()` only admitted unresolved Turbo embeds, so a Bunkr `/f/` item had a working resolver and a Download button but no checkbox and no way into the ZIP queue. Single-file Bunkr links now count as downloadable before resolution; album `/a/` pages stay excluded, and a resolution that already failed stays failed.
+- **Fixed a cleared history being resurrected by another tab.** 0.11.0 merged the tab's entire in-memory map into storage on every write, so a tab that missed a Clear History could restore everything it still held on its next download. Storage is now the record and a tab contributes only the entries it has created since its last write.
+- **Fixed history replacement truncating in other tabs.** The replace broadcast carried the newest 250 entries and receiving tabs replaced their whole history with it, so importing a larger backup made older download indicators disappear elsewhere. All three cases now broadcast one payload-free invalidation and receivers reload the full record from storage.
+- **Fixed Per view being live but inert in Flow and Timeline.** It is disabled while virtualization is genuinely active, the view summary reads `… matched · virtualized`, and the stored size is preserved for the paged layouts.
+- Documented that the stable script and this concept must not be enabled on the same thread: both register a launcher, a document-level keyboard handler and a scroll lock, and no runtime coordination exists between them.
+- Updated a stale comment that still described the file as v0.9.7, and corrected the Appearance copy that claimed Flow and Timeline always render only what is visible.
+
+## 0.11.0 (timeline fork — unreleased)
+
+Ideas ported from the FreeInternet-Media downloader, adapted to this script's resolver grading and byte validation.
+
+- **Fixed download history being erased by a second tab.** Each tab held the whole history map in memory and wrote it back whole, so a tab opened before another tab's downloads would silently overwrite them on its next write. Every write now merges what is already on disk first, resolving per file: a verified record outranks a legacy marker, and otherwise the newer write wins. A `BroadcastChannel` keeps the other tab's SAVED badges and history counts current between writes, and clearing history in one tab clears it everywhere instead of being restored by the next write elsewhere. Importing a backup still replaces rather than merges. The aspect-ratio cache gets the same merge-before-write treatment, re-read on a 15-second timer since a lost ratio only costs one layout guess.
+- **Added a confirmation before leaving the page mid-download.** Download jobs live only in this page's memory, so a reload discarded partial files and any ZIP not yet written, with no warning.
+- **Added a Bunkr resolver.** Bunkr links are common in these threads and were being swallowed by the generic video-host entry, which has no resolver, so they could only ever open the host page. The chain is file page → numeric id → `dl.bunkr.cr/api/_001_v2` → `glb-apisign.cdn.cr/sign` → signed CDN URL, adapted from Bunkr Album Downloader by pinkman (MIT). Because Bunkr serves images and videos behind one link shape, its resolutions are exempt from the media-type check that would otherwise reject a JPEG arriving where the thread markup implied a video, and the saved filename now follows the verified bytes rather than the guess. Album (`/a/`) links still fall back to opening the host page.
+- **Added media URL export.** More → Export media list copies the URLs, or saves them as `.txt` (with `#` comments both gallery-dl and yt-dlp accept) or `.json` with per-item host, author, page, reply and download state. Exports the selection when there is one, otherwise everything matching the current filters. Confirmed resolutions export the actual file; anything else exports the host page, which is what an external downloader wants.
+- **Added rebindable keyboard shortcuts.** Settings → Keyboard shortcuts records a chord for opening the gallery, focusing search, cycling layout and selecting the view. The gallery-wide chord must carry a modifier. Conflicts are refused at recording time, and a stored binding that takes another action's default leaves that action unbound rather than double-bound. The viewer's own single-key controls remain fixed.
+- **Added an ignore list.** Settings → Ignore list drops media whose URL contains any listed fragment before it is indexed, so signature images and avatar CDNs cost no card, no ratio-cache entry and no memory. Editing the list also drops anything already indexed that matches.
+- **Added a settings search.** The settings sheet filters its cards as you type.
+
 ## 0.10.0 (timeline fork — unreleased)
 
 Forked from 0.9.7.1. Separate script identity so both can be installed at once:
