@@ -2,6 +2,17 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.12.1 (timeline fork — unreleased)
+
+Defect pass over 0.12.0. No new capability.
+
+- **Three strings still advertised layouts that had been deleted.** The "All" clamp toast, the Per view size warning and the Settings → Appearance copy each told the reader to use Flow or Timeline — layouts 0.12.0 removed. They now name Masonry, which is the one that actually renders only what is on screen. A test fails if a retired layout name ever reappears in anything the reader can see.
+- **Fixed measured image ratios being silently dropped while scrolling.** `scheduleFlowLayout` and `scheduleFlowWindow` shared one animation-frame slot and each returned early if the slot was taken, so a scroll-queued window update swallowed a re-pack request landing in the same frame. Since a scroll and an arriving image ratio coincide constantly, the newly measured ratio never reached the layout and the card kept its estimated height. A pending layout is now sticky: a window request can never downgrade it.
+- **Fixed a re-mounted card rendering an expired signed URL.** `embedPlayerMarkup` read the cached resolution directly, bypassing the expiry check that `resolveCandidate` applies, so scrolling back to a played Bunkr card after its token died mounted a dead `<video>` with no error handling. Playback liveness is now asked before re-mounting; a stale card shows its Play button again, and pressing it resolves a fresh URL.
+- **Fixed download markers being lost to a failed write.** `persistDownloadHistory` emptied its pending set on the line before `storage.set`, inside a try whose catch swallows everything — so a quota failure dropped those records permanently, with no later write able to carry them. The pending set is now cleared only once the write has landed.
+- **Fixed filename collisions within one reply.** `mediaIndex` restarted at zero for each of the four extraction passes, so a `<video>` element and a direct `.mp4` link in the same reply both produced `-vid01`. One counter now runs across all four. Download history keys are derived from the URL, not the filename, so existing history is unaffected.
+- Removed `partitionSections`, `stackSections` and `stickyHeaderOffset` — dead since the Timeline layout went, and held up only by their own tests, which read as covered behaviour. Removed seven icons nothing draws, and corrected three comments still describing a two-renderer design.
+
 ## 0.12.0 (timeline fork — unreleased)
 
 - **Cut the layout picker from five to two: Masonry and Grid.** Flow was Masonry computed rather than CSS-balanced — the same picture at the same column width, differing only in that it was virtualized, which is an implementation detail that never belonged in a picker. Masonry *is* that renderer now, so the default layout windows itself and a several-thousand-item thread no longer mounts every card. Timeline (justified rows) and Feed (one per row) are gone; a stored layout that no longer exists falls back to Masonry.

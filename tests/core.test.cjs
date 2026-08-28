@@ -48,8 +48,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '0.12.0');
-  assert.match(source, /const APP_VERSION = '0\.12\.0'/);
+  assert.equal(metadataValue('version'), '0.12.1');
+  assert.match(source, /const APP_VERSION = '0\.12\.1'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -959,9 +959,9 @@ test('stored midnight and graphite settings migrate to dark plus an accent', () 
 
 function loadLayoutEngine() {
   return evaluateSlice(
-    'function partitionSections',
+    'function entryRatio',
     'const IMAGE_EXT',
-    ['partitionSections', 'packColumns', 'stackSections', 'visibleRowRange', 'stickyHeaderOffset'],
+    ['packColumns', 'visibleRowRange'],
     {
       clampRatio: value => {
         const ratio = Number(value);
@@ -974,27 +974,6 @@ function loadLayoutEngine() {
 
 const entriesOf = (count, ratio) =>
   Array.from({ length: count }, (_, index) => ({ key: 'k' + index, ratio }));
-
-test('sections chunk ungrouped items and follow reply boundaries when grouped', () => {
-  const { partitionSections } = loadLayoutEngine();
-
-  const chunked = partitionSections(entriesOf(450, 1), { chunkSize: 200 });
-  assert.equal(chunked.map(section => section.entries.length).join(','), '200,200,50');
-  // Empty input still yields one section so callers never special-case it.
-  assert.equal(partitionSections([], {}).length, 1);
-  assert.equal(partitionSections([], {})[0].entries.length, 0);
-
-  const grouped = partitionSections([
-    { key: 'a', ratio: 1, sectionId: 'r1', sectionLabel: 'Reply #1' },
-    { key: 'b', ratio: 1, sectionId: 'r2', sectionLabel: 'Reply #2' },
-    { key: 'c', ratio: 1, sectionId: 'r1', sectionLabel: 'Reply #1' },
-  ], { groupBy: 'reply' });
-  assert.equal(grouped.length, 2);
-  assert.equal(grouped[0].label, 'Reply #1');
-  // Order of first appearance is preserved, and a group gathers its members.
-  assert.equal(grouped[0].entries.map(entry => entry.key).join(','), 'a,c');
-  assert.equal(grouped[1].entries.map(entry => entry.key).join(','), 'b');
-});
 
 test('masonry packs into the shortest column and never overflows the container', () => {
   const { packColumns } = loadLayoutEngine();
@@ -1070,20 +1049,6 @@ test('the column cap follows the same breakpoints the stylesheet uses', () => {
     .forEach(([fragment]) => assert.ok(source.includes(fragment), 'missing CSS column rule: ' + fragment));
 });
 
-test('sections stack with headers and report a total height', () => {
-  const { stackSections } = loadLayoutEngine();
-  const stacked = stackSections(
-    [{ id: 'a', label: 'A', height: 100 }, { id: 'b', label: 'B', height: 50 }],
-    { gap: 10, headerHeight: 20, startTop: 0 },
-  );
-  assert.equal(stacked.sections[0].top, 0);
-  assert.equal(stacked.sections[0].height, 120);
-  assert.equal(stacked.sections[1].top, 130);
-  // Trailing gap is not counted, so the spacer matches the content.
-  assert.equal(stacked.totalHeight, 200);
-  assert.equal(stackSections([], { gap: 10 }).totalHeight, 0);
-});
-
 test('the render window finds every intersecting cell, including tall stragglers', () => {
   const { visibleRowRange } = loadLayoutEngine();
   const cells = [
@@ -1108,21 +1073,6 @@ test('the render window finds every intersecting cell, including tall stragglers
   assert.equal(visibleRowRange([], 0, 300, 0, 900).end, -1);
   // Without a known tallest cell the range must widen, never drop a cell.
   assert.equal(visibleRowRange(cells, 600, 300, 0).start, 0);
-});
-
-test('sticky headers pin within their own section and hand over at the boundary', () => {
-  const { stickyHeaderOffset } = loadLayoutEngine();
-  const section = { top: 1000, height: 500 };
-
-  // Above the section: parked at the top.
-  assert.equal(stickyHeaderOffset(section, 0, 40), 1000);
-  // Inside: follows the scroll.
-  assert.equal(stickyHeaderOffset(section, 1200, 40), 1200);
-  // Near the end: stops so the next section pushes it off rather than overlapping.
-  assert.equal(stickyHeaderOffset(section, 1490, 40), 1460);
-  assert.equal(stickyHeaderOffset(section, 99999, 40), 1460);
-  // A section shorter than its own header must not invert.
-  assert.equal(stickyHeaderOffset({ top: 10, height: 20 }, 500, 40), 10);
 });
 
 test('cards address their item by key, not by position', () => {
@@ -1630,7 +1580,114 @@ test('the pager and the size warning ask the renderer, not the layout name', () 
   assert.match(source, /matched · virtualized/);
   assert.match(source, /All paged at \$\{state\.appliedPerPage\}/);
   // And the settings copy no longer claims windowing unconditionally.
-  assert.match(source, /Grouping by reply uses the paged renderer instead, so Per view applies again\./);
+  assert.match(source, /use the paged renderer instead, so Per view applies again\./);
+});
+
+test('nothing the reader can see names a layout that was deleted', () => {
+  // 0.12.0 removed Flow, Timeline and Feed but left three strings advertising
+  // them: the All clamp toast, the Per view warning and the Appearance copy.
+  // Each one sent the reader hunting through a picker that has two entries.
+  assert.doesNotMatch(source, /Flow (?:or|and) Timeline/);
+  assert.doesNotMatch(source, /data-layout="(?:flow|timeline|feed)"/);
+  // The advice that replaced them has to name a layout that exists.
+  assert.match(source, /Masonry without reply grouping renders only what is on screen/);
+
+  // Icons those layouts drew went with them, along with two that predate the
+  // accent system.
+  for (const name of ['sun', 'moon', 'masonry', 'grid', 'timeline', 'feed', 'resolution']) {
+    assert.doesNotMatch(source, new RegExp(`^\\\\s+${name}: '<`, 'm'), `${name} icon is drawn by nothing`);
+  }
+});
+
+test('a queued window update cannot swallow a re-pack', () => {
+  const flow = { frame: 0, pendingLayout: false };
+  const ran = [];
+  let queued = null;
+  const { scheduleFlowLayout, scheduleFlowWindow } = evaluateSlice(
+    'function scheduleFlowFrame',
+    'function teardownFlow',
+    ['scheduleFlowLayout', 'scheduleFlowWindow'],
+    {
+      flow,
+      usesWindowedRenderer: () => true,
+      relayoutFlow: () => ran.push('layout'),
+      updateFlowWindow: () => ran.push('window'),
+      requestAnimationFrame: callback => { queued = callback; return 7; },
+    },
+  );
+
+  // A scroll takes the slot, then an image ratio arrives in the same frame.
+  // The old shared boolean dropped the re-pack and the measurement was lost.
+  scheduleFlowWindow();
+  scheduleFlowLayout();
+  queued();
+  assert.deepEqual(plain(ran), ['layout'], 'the layout request outranks the window request');
+
+  // The flag does not persist into the next frame.
+  ran.length = 0;
+  scheduleFlowWindow();
+  queued();
+  assert.deepEqual(plain(ran), ['window']);
+
+  // And a layout request alone still relayouts.
+  ran.length = 0;
+  scheduleFlowLayout();
+  queued();
+  assert.deepEqual(plain(ran), ['layout']);
+});
+
+test('an expired signed URL sends the card back to its Play button', () => {
+  const { resolutionIsLive, embedPlaybackIsLive } = evaluateSlice(
+    'function resolutionIsLive',
+    'async function startEmbeddedPlayer',
+    ['resolutionIsLive', 'embedPlaybackIsLive'],
+    { VIDEO_EXT: /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i, escapeHtml: String, embedFallbackMarkup: () => '' },
+  );
+
+  // A resolution with no expiry is a plain URL and never goes stale.
+  assert.equal(resolutionIsLive({ url: 'https://host/a.mp4' }), true);
+  assert.equal(resolutionIsLive(null), false);
+  // Signed URLs are dropped a minute early, the same margin resolveCandidate uses.
+  assert.equal(resolutionIsLive({ expiresAt: Date.now() + 600000 }), true);
+  assert.equal(resolutionIsLive({ expiresAt: Date.now() + 30000 }), false);
+  assert.equal(resolutionIsLive({ expiresAt: Date.now() - 1 }), false);
+
+  const live = { resolution: { candidate: { status: 'confirmed', url: 'https://cdn/a.mp4', expiresAt: Date.now() + 600000 } } };
+  const stale = { resolution: { candidate: { status: 'confirmed', url: 'https://cdn/a.mp4', expiresAt: Date.now() - 1 } } };
+  assert.equal(embedPlaybackIsLive(live), true);
+  assert.equal(embedPlaybackIsLive(stale), false, 'a re-mounted card must not render a dead URL');
+  // A file that already refused to play inline is not retried either.
+  assert.equal(embedPlaybackIsLive({ ...live, embedPlaybackFailed: true }), false);
+
+  // The card asks before re-mounting a player rather than trusting activePlayers alone.
+  assert.match(source, /state\.activePlayers\.has\(item\.selectionKey\) && embedPlaybackIsLive\(item\)/);
+});
+
+test('the pending history set is only cleared once the write lands', () => {
+  const body = source.slice(
+    source.indexOf('function persistDownloadHistory'),
+    source.indexOf('function reloadDownloadHistory'),
+  );
+  // Clearing first meant a swallowed quota failure dropped those markers for
+  // good: no later write would ever carry them to storage.
+  assert.ok(
+    body.indexOf('storage.set(DOWNLOAD_HISTORY_KEY') < body.indexOf('pendingHistoryWrites = {}'),
+    'the write must happen before the pending set is emptied',
+  );
+});
+
+test('one media counter per reply, not one per extraction pass', () => {
+  const body = source.slice(
+    source.indexOf('function extractFromDocument'),
+    source.indexOf('function purgeBlockedItems'),
+  );
+  // Four passes each restarting at zero gave a <video> and a direct .mp4 link
+  // in one reply the same -vid01 filename.
+  assert.doesNotMatch(body, /forEach\(\((?:img|video|frame|anchor), mediaIndex\)/);
+  assert.match(body, /let mediaIndex = 0;/);
+  // Images capture the number first because mediaKey also uses it.
+  assert.match(body, /const order = mediaIndex\+\+;/);
+  assert.equal((body.match(/mediaIndex: mediaIndex\+\+/g) || []).length, 4);
 });
 
 test('an unresolved Bunkr file can be selected, but an album cannot', () => {

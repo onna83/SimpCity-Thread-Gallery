@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.12.0
+// @version      0.12.1
 // @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing, verified downloads, Bunkr resolution and URL list export.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.12.0';
+  const APP_VERSION = '0.12.1';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -504,31 +504,6 @@
      IMAGE_EXT is directly exercisable by the test harness.
      ------------------------------------------------------------------------ */
 
-  // Sections bound how much has to be recomputed when one late ratio arrives.
-  // Reply grouping makes them meaningful units; otherwise they are fixed
-  // chunks, so a measurement at item 4000 never re-partitions item 30.
-  function partitionSections(entries, options) {
-    const chunkSize = Math.max(1, (options && options.chunkSize) || 200);
-    if (!options || options.groupBy !== 'reply') {
-      const sections = [];
-      for (let index = 0; index < entries.length; index += chunkSize) {
-        sections.push({
-          id: 'chunk-' + (sections.length + 1),
-          label: '',
-          entries: entries.slice(index, index + chunkSize),
-        });
-      }
-      return sections.length ? sections : [{ id: 'chunk-1', label: '', entries: [] }];
-    }
-    const groups = new Map();
-    entries.forEach(entry => {
-      const id = String(entry.sectionId === undefined ? '' : entry.sectionId);
-      if (!groups.has(id)) groups.set(id, { id, label: entry.sectionLabel || '', entries: [] });
-      groups.get(id).entries.push(entry);
-    });
-    return [...groups.values()];
-  }
-
   function entryRatio(entry, fallback) {
     const ratio = clampRatio(entry && entry.ratio);
     return ratio || fallback;
@@ -569,19 +544,6 @@
     return { cells, columns, columnWidth: width, height: Math.max(0, tallest - gap) };
   }
 
-  function stackSections(sections, options) {
-    const gap = options.gap;
-    const headerHeight = options.headerHeight || 0;
-    let top = options.startTop || 0;
-    const stacked = sections.map(section => {
-      const height = headerHeight + section.height;
-      const placed = { id: section.id, label: section.label, top, height, headerHeight };
-      top += height + gap;
-      return placed;
-    });
-    return { sections: stacked, totalHeight: Math.max(0, top - gap) };
-  }
-
   // Cells must be ordered by y. Tops are monotonic; bottoms are not, because a
   // tall cell can start far above and still intersect. Walking backwards from
   // the lower bound is not enough -- it stops at the first non-overlapping
@@ -620,14 +582,6 @@
     return start > end ? { start: 0, end: -1 } : { start, end };
   }
 
-  // CSS position:sticky does not apply among absolutely positioned siblings,
-  // so the pinned offset is computed instead.
-  function stickyHeaderOffset(section, scrollTop, headerHeight) {
-    const min = section.top;
-    const max = Math.max(min, section.top + section.height - headerHeight);
-    return Math.min(Math.max(scrollTop, min), max);
-  }
-
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
   const IMAGE_EXT_BARE = /^(?:jpe?g|png|gif|webp|avif|bmp)$/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
@@ -649,23 +603,16 @@
     info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11.25v5"/><path d="M12 7.9h.01" stroke-width="2.4"/>',
     filter: '<path d="M4 5.25h16l-6.15 7v5.35l-3.7 1.65V12.25Z"/>',
     sliders: '<path d="M4.5 7.5h9M17.5 7.5h2M4.5 16.5h2M10.5 16.5h9"/><circle cx="15.5" cy="7.5" r="2.25"/><circle cx="8.5" cy="16.5" r="2.25"/>',
-    sun: '<circle cx="12" cy="12" r="3.9"/><path d="M12 2.75v1.9M12 19.35v1.9M4.72 4.72l1.35 1.35M17.93 17.93l1.35 1.35M2.75 12h1.9M19.35 12h1.9M4.72 19.28l1.35-1.35M17.93 6.07l1.35-1.35"/>',
-    moon: '<path d="M20.25 14.6A8.75 8.75 0 0 1 9.4 3.75a8.75 8.75 0 1 0 10.85 10.85Z"/>',
     palette: '<path d="M12 3.25a8.75 8.75 0 0 0 0 17.5h1.15a1.9 1.9 0 0 0 1.35-3.25l-.3-.3a1.35 1.35 0 0 1 .95-2.3h1.6a4.5 4.5 0 0 0 4.5-4.5c0-3.95-4.15-7.15-9.25-7.15Z"/><circle cx="7.9" cy="10.4" r="1.05"/><circle cx="10.4" cy="7.1" r="1.05"/><circle cx="14" cy="7.1" r="1.05"/><circle cx="16.6" cy="10.4" r="1.05"/>',
     chevron: '<path d="m6.75 9.75 5.25 5 5.25-5"/>',
     more: '<path d="M6 12h.01M12 12h.01M18 12h.01" stroke-width="2.4"/>',
     scan: '<path d="M3.75 8V5.75a2 2 0 0 1 2-2H8M16 3.75h2.25a2 2 0 0 1 2 2V8M20.25 16v2.25a2 2 0 0 1-2 2H16M8 20.25H5.75a2 2 0 0 1-2-2V16"/><path d="M7.5 12h9"/>',
-    masonry: '<rect x="3.5" y="3.5" width="7" height="10.25" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="6" rx="1.6"/><rect x="3.5" y="16" width="7" height="4.5" rx="1.6"/><rect x="13.5" y="11.75" width="7" height="8.75" rx="1.6"/>',
-    grid: '<rect x="3.5" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="3.5" width="7.25" height="7.25" rx="1.6"/><rect x="3.5" y="13.25" width="7.25" height="7.25" rx="1.6"/><rect x="13.25" y="13.25" width="7.25" height="7.25" rx="1.6"/>',
-    timeline: '<rect x="3.5" y="4.75" width="8.75" height="6" rx="1.5"/><rect x="13.75" y="4.75" width="6.75" height="6" rx="1.5"/><rect x="3.5" y="13.25" width="5.75" height="6" rx="1.5"/><rect x="10.75" y="13.25" width="9.75" height="6" rx="1.5"/>',
-    feed: '<rect x="3.5" y="4.25" width="6.75" height="6" rx="1.5"/><path d="M13 6h7.5M13 8.9h5.25"/><rect x="3.5" y="13.75" width="6.75" height="6" rx="1.5"/><path d="M13 15.5h7.5M13 18.4h5.25"/>',
     zoomIn: '<circle cx="10.75" cy="10.75" r="6.5"/><path d="m15.6 15.6 4.65 4.65M10.75 7.9v5.7M7.9 10.75h5.7"/>',
     zoomOut: '<circle cx="10.75" cy="10.75" r="6.5"/><path d="m15.6 15.6 4.65 4.65M7.9 10.75h5.7"/>',
     fit: '<path d="M9.75 4.25H4.25V9.75M14.25 4.25h5.5V9.75M9.75 19.75H4.25V14.25M14.25 19.75h5.5V14.25"/><rect x="8.75" y="8.75" width="6.5" height="6.5" rx="1.4"/>',
     fullscreen: '<path d="M9 3.75H5.75a2 2 0 0 0-2 2V9M15 3.75h3.25a2 2 0 0 1 2 2V9M9 20.25H5.75a2 2 0 0 1-2-2V15M15 20.25h3.25a2 2 0 0 0 2-2V15"/>',
     external: '<path d="M14.25 3.75h6v6M20.25 3.75 12 12"/><path d="M18.5 13.5v4.75a2 2 0 0 1-2 2h-11a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2h4.75"/>',
     play: '<circle cx="12" cy="12" r="8.5"/><path d="M10.4 9.15a.4.4 0 0 1 .61-.34l4.35 2.85a.4.4 0 0 1 0 .68l-4.35 2.85a.4.4 0 0 1-.61-.34Z"/>',
-    resolution: '<rect x="2.75" y="4.5" width="18.5" height="12.5" rx="2.5"/><path d="M8.5 20.25h7M12 17v3.25M6.75 8.25h2.75V11M17.25 8.25H14.5V11"/>',
     search: '<circle cx="10.75" cy="10.75" r="6.75"/><path d="m15.75 15.75 4.5 4.5"/>',
     link: '<path d="M10.1 13.4a4.6 4.6 0 0 0 6.85.5l2.05-2.05a4.6 4.6 0 0 0-6.5-6.5l-1.2 1.2"/><path d="M13.9 10.6a4.6 4.6 0 0 0-6.85-.5L5 12.15a4.6 4.6 0 0 0 6.5 6.5l1.2-1.2"/>',
     text: '<path d="M4.75 6.25V4.75h14.5v1.5M12 4.75v14.5M9 19.25h6"/>',
@@ -1008,8 +955,11 @@
         .sort((a, b) => Number(b[1]?.time || 0) - Number(a[1]?.time || 0))
         .slice(0, 5000);
       state.downloadHistory = Object.fromEntries(entries);
-      pendingHistoryWrites = {};
       storage.set(DOWNLOAD_HISTORY_KEY, state.downloadHistory);
+      // Only once the write has actually landed. Clearing first meant a quota
+      // failure -- swallowed by the catch below -- dropped those markers from
+      // the pending set for good, so no later write would ever carry them.
+      pendingHistoryWrites = {};
       // An invalidation, never a payload: a payload would be a second source of
       // truth, and one bounded small enough to broadcast would silently truncate
       // a large import in every other tab.
@@ -1225,10 +1175,10 @@
     catch { return false; }
   };
 
-  // Switching layout rebuilds the grid. It cannot be a shell-only repaint:
-  // masonry and grid are laid out by CSS, flow and timeline by us, and their
-  // cards are absolutely positioned. Only re-styling the shell leaves whatever
-  // the previous layout built still sitting there with its old geometry.
+  // Switching layout rebuilds the grid. It cannot be a shell-only repaint: the
+  // uniform grid is laid out by CSS and masonry is placed by us, and its cards
+  // are absolutely positioned. Only re-styling the shell leaves whatever the
+  // previous layout built still sitting there with its old geometry.
   function setLayoutMode(next, announce = false) {
     if (!LAYOUT_MODES.includes(next) || next === state.layoutMode) return;
     commitState({ layoutMode: next }, { persist: true });
@@ -1298,8 +1248,13 @@
         pageNumber: pageNumberFromUrl(base),
         postIndex,
       };
+      // One counter across all four passes below. Each pass used to restart at
+      // zero, so a <video> and a direct .mp4 link in the same reply both named
+      // themselves -vid01 and collided in the download folder. Skipped elements
+      // do not consume a number, so the sequence stays dense.
+      let mediaIndex = 0;
 
-      content.querySelectorAll('img').forEach((img, mediaIndex) => {
+      content.querySelectorAll('img').forEach(img => {
         const linked = img.closest('a[href]');
         const classes = `${img.className || ''} ${linked?.className || ''}`;
         if (IGNORE_IMG.test(classes)) return;
@@ -1315,20 +1270,21 @@
           : { ...preview, mediaType: 'image' };
         const src = seed.url;
         if (!src || /(?:avatar|smilies|emoji|reactions)\//i.test(src)) return;
+        const order = mediaIndex++;
         results.push({
           type: 'image', url: src, thumb, originalLink, lightboxHint,
-          mediaKey: `${String(postId).replace(/[^a-z0-9_-]/gi, '')}-${postIndex}-${mediaIndex}`,
+          mediaKey: `${String(postId).replace(/[^a-z0-9_-]/gi, '')}-${postIndex}-${order}`,
           resolution: { candidate: seed },
           dimHint: parseDimensionHints({
             width: img.getAttribute('width'),
             height: img.getAttribute('height'),
             style: img.getAttribute('style'),
           }),
-          caption: img.getAttribute('alt') || img.getAttribute('title') || '', mediaIndex, ...common,
+          caption: img.getAttribute('alt') || img.getAttribute('title') || '', mediaIndex: order, ...common,
         });
       });
 
-      content.querySelectorAll('video').forEach((video, mediaIndex) => {
+      content.querySelectorAll('video').forEach(video => {
         const source = video.querySelector('source');
         const src = absoluteUrl(video.currentSrc || video.getAttribute('data-src') || video.getAttribute('src') ||
           source?.getAttribute('data-src') || source?.getAttribute('src'), base);
@@ -1336,20 +1292,20 @@
         results.push({
           type: 'video', url: src, poster: absoluteUrl(video.getAttribute('data-poster') || video.getAttribute('poster'), base),
           resolution: { candidate: { status: 'confirmed', url: src, method: 'video-element', mediaType: 'video' } },
-          mediaIndex, ...common,
+          mediaIndex: mediaIndex++, ...common,
         });
       });
 
-      content.querySelectorAll('iframe[src], iframe[data-src]').forEach((frame, mediaIndex) => {
+      content.querySelectorAll('iframe[src], iframe[data-src]').forEach(frame => {
         const src = normalizeSourceUrl(frame.getAttribute('data-src') || frame.getAttribute('src'), base);
         if (!src) return;
         results.push({
           type: 'embed', url: src, title: frame.getAttribute('title') || 'Embedded video',
-          wasFrame: true, mediaIndex, ...common,
+          wasFrame: true, mediaIndex: mediaIndex++, ...common,
         });
       });
 
-      content.querySelectorAll('a[href]').forEach((anchor, mediaIndex) => {
+      content.querySelectorAll('a[href]').forEach(anchor => {
         const href = normalizeSourceUrl(anchor.getAttribute('href'), base);
         if (!href || anchor.querySelector('img')) return;
         if (/\/threads\/|\/posts\/|#post-|\/members\//i.test(href)) return;
@@ -1359,10 +1315,10 @@
           results.push({
             type: directVideo ? 'video' : 'embed', url: href, title: label,
             resolution: directVideo ? { candidate: { status: 'confirmed', url: href, method: 'direct-video-link', mediaType: 'video' } } : {},
-            mediaIndex, ...common,
+            mediaIndex: mediaIndex++, ...common,
           });
         } else {
-          results.push({ type: 'link', url: href, title: label, mediaIndex, ...common });
+          results.push({ type: 'link', url: href, title: label, mediaIndex: mediaIndex++, ...common });
         }
       });
 
@@ -3484,9 +3440,24 @@
     return `<div class="scg-embed-unavailable"><b>This file would not play here</b><a href="${escapeHtml(normalizeSourceUrl(item.url))}" target="_blank" rel="noopener">${icon('external')}<span>Open on ${escapeHtml(hostOf(item.url))}</span></a></div>`;
   }
 
+  // A signed CDN URL dies. resolveCandidate drops one that is close to death,
+  // but a card re-mounted by the window renderer reads the cached candidate
+  // directly and never goes through it, so the same question is asked here.
+  function resolutionIsLive(resolution) {
+    if (!resolution) return false;
+    if (!resolution.expiresAt) return true;
+    return Date.now() < Number(resolution.expiresAt) - 60000;
+  }
+
+  // Whether the card can be re-mounted straight into a player, or has to go
+  // back to its Play button and resolve again.
+  function embedPlaybackIsLive(item) {
+    return Boolean(item) && !item.embedPlaybackFailed && resolutionIsLive(item.resolution?.candidate);
+  }
+
   function embedPlayerMarkup(item, resolution) {
     const direct = resolution || item.resolution?.candidate;
-    if (!item.embedPlaybackFailed && direct?.status === 'confirmed' && direct.url && VIDEO_EXT.test(direct.url)) {
+    if (!item.embedPlaybackFailed && resolutionIsLive(direct) && direct?.status === 'confirmed' && direct.url && VIDEO_EXT.test(direct.url)) {
       return `<video controls preload="metadata" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(direct.url)}"></video>`;
     }
     return embedFallbackMarkup(item);
@@ -3550,7 +3521,10 @@
     }
     if (item.type === 'video' || item.type === 'embed') {
       if (playsInPlace(item)) {
-        const player = state.activePlayers.has(item.selectionKey)
+        // A player that has been played once re-mounts as a player -- unless its
+        // resolution has expired since, in which case the Play button is the
+        // honest thing to show: pressing it resolves a fresh URL.
+        const player = state.activePlayers.has(item.selectionKey) && embedPlaybackIsLive(item)
           ? `<div class="scg-embed">${embedPlayerMarkup(item)}</div>`
           : `<div class="scg-embed scg-embed-placeholder">${embedPlaceholderMarkup(item)}</div>`;
         return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}${player}${actions}${meta}</article>`;
@@ -3747,7 +3721,7 @@
     if (!clamped) return;
     const reason = state.groupBy === 'reply' ? 'Reply grouping' : LAYOUT_LABELS[state.layoutMode];
     notify(`${reason} mounts every card, so Per view: All is paged at ${DEFAULT_SETTINGS.perPage} for these ` +
-      `${Number(matchedCount).toLocaleString()} matches. Flow or Timeline without reply grouping shows them all at once. ` +
+      `${Number(matchedCount).toLocaleString()} matches. Masonry without reply grouping renders only what is on screen and can show them all at once. ` +
       'Your Per view setting is unchanged.', 8000);
   }
 
@@ -3937,11 +3911,9 @@
 
   /* ---- The windowed renderer -----------------------------------------------
      CSS multi-column cannot be virtualized -- the browser must see every box to
-     balance the columns -- so these modes position cards themselves and mount
-     only the ones near the viewport. Flow packs columns and timeline justifies
-     rows; both emit the same cell model, so everything below serves both.
-     Pagination is bypassed here: the whole filtered set is laid out and the
-     window does the limiting.
+     balance the columns -- so masonry positions its cards itself and mounts
+     only the ones near the viewport. Pagination is bypassed here: the whole
+     filtered set is laid out and the window does the limiting.
      ------------------------------------------------------------------------ */
 
   const FLOW_OVERSCAN = 900;
@@ -3952,16 +3924,17 @@
     mounted: new Map(),
     range: { start: 0, end: -1 },
     frame: 0,
+    pendingLayout: false,
     resizeObserver: null,
     width: 0,
   };
 
-  // Flow and Timeline own the grid only when it is a flat list of cards. Reply
-  // grouping needs the sectioned markup path and a scan renders skeletons, so
-  // in both cases the windowed renderer is not what is on screen. Everything
-  // that reasons about virtualization asks this, never the layout alone: the
-  // two answers drifting apart is what let a grouped "All" mount every card
-  // while the size warning stayed silent.
+  // Masonry owns the grid only when it is a flat list of cards. Reply grouping
+  // needs the sectioned markup path and a scan renders skeletons, so in both
+  // cases the windowed renderer is not what is on screen. Everything that
+  // reasons about virtualization asks this, never the layout alone: the two
+  // answers drifting apart is what let a grouped "All" mount every card while
+  // the size warning stayed silent.
   function usesWindowedRenderer(overrides = {}) {
     const layoutMode = overrides.layoutMode === undefined ? state.layoutMode : overrides.layoutMode;
     const groupBy = overrides.groupBy === undefined ? state.groupBy : overrides.groupBy;
@@ -4144,23 +4117,36 @@
     updateFlowWindow();
   }
 
-  function scheduleFlowLayout() {
-    if (flow.frame || !usesWindowedRenderer()) return;
+  // One frame slot, but the two requests are not equal. A scroll and an
+  // arriving image ratio land in the same frame constantly, and a shared
+  // boolean let the cheaper one win: the queued window update ran, the re-pack
+  // was dropped, and the measured ratio never reached the layout. A pending
+  // layout is therefore sticky -- a window request can never downgrade it.
+  function scheduleFlowFrame(wantsLayout) {
+    if (!usesWindowedRenderer()) return;
+    if (wantsLayout) flow.pendingLayout = true;
+    if (flow.frame) return;
     flow.frame = requestAnimationFrame(() => {
       flow.frame = 0;
-      relayoutFlow();
+      const relayout = flow.pendingLayout;
+      flow.pendingLayout = false;
+      if (relayout) relayoutFlow();
+      else updateFlowWindow();
     });
+  }
+
+  function scheduleFlowLayout() {
+    scheduleFlowFrame(true);
   }
 
   function scheduleFlowWindow() {
-    if (flow.frame || !usesWindowedRenderer()) return;
-    flow.frame = requestAnimationFrame(() => {
-      flow.frame = 0;
-      updateFlowWindow();
-    });
+    scheduleFlowFrame(false);
   }
 
   function teardownFlow() {
+    if (flow.frame) cancelAnimationFrame(flow.frame);
+    flow.frame = 0;
+    flow.pendingLayout = false;
     flow.mounted.forEach(node => releaseFlowNode(node));
     flow.mounted.clear();
     flow.model = null;
@@ -6999,7 +6985,7 @@
           <div class="scg-settings-search">${icon('search')}<input type="search" data-settings-search placeholder="Search settings" aria-label="Search settings" aria-describedby="scg-tl-settings-empty"><button type="button" data-action="clear-settings-search" aria-label="Clear the settings search">${icon('close')}</button></div>
           <p class="scg-settings-empty" id="scg-tl-settings-empty" data-settings-empty role="status" hidden>No settings match that search.</p>
           <div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Flow and Timeline render only what is on screen, which is what makes them suitable for very large threads. Grouping by reply uses the paged renderer instead, so Per view applies again.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Masonry renders only what is on screen, which is what makes it suitable for very large threads. The uniform grid and grouping by reply use the paged renderer instead, so Per view applies again.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
           <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
           <section class="scg-settings-card"><h3>${icon('keyboard')} Keyboard shortcuts</h3><p>Click a chord and press the keys you want. Escape cancels a recording. Shortcuts never fire while you are typing in a field, and the media viewer's own keys are fixed.</p><div class="scg-shortcut-rows">${SHORTCUT_ACTIONS.map(action => `<div class="scg-shortcut-row"><span>${escapeHtml(action.label)}</span><button type="button" class="scg-shortcut-key" data-shortcut="${action.id}" aria-label="Change the shortcut for ${escapeHtml(action.label)}"></button></div>`).join('')}</div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="reset-shortcuts">${iconWell('reset')}<span>Restore defaults</span></button></div></section>
@@ -7276,7 +7262,7 @@
     // so the two notices never both fire.
     const matched = visibleItems().length;
     if (perPage === 0 && !usesWindowedRenderer() && matched > UNWINDOWED_ALL_NOTICE && matched <= UNWINDOWED_ALL_LIMIT) {
-      notify(`All ${matched.toLocaleString()} matches are about to be put in the page. Flow or Timeline render only what is on screen.`, 6500);
+      notify(`All ${matched.toLocaleString()} matches are about to be put in the page. Masonry without reply grouping renders only what is on screen.`, 6500);
     }
     commitState({ perPage, viewPage: 1 }, { persist: true });
   };
