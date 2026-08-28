@@ -36,7 +36,14 @@ const resolvers = slice(
   'const absoluteUrl =',
   'function downloadHistoryKey',
   ['hostOf', 'hostDefinition', 'hasDirectResolver', 'isDownloadableMedia', 'threadBaseUrl'],
-  { VIDEO_EXT, state: { threadPageCount: 1 }, hostOf: url => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'link'; } } },
+  {
+    VIDEO_EXT,
+    state: { threadPageCount: 1, selected: new Set() },
+    storage: { get: (_key, fallback) => fallback, set: () => {} },
+    SCAN_PROGRESS_KEY: 'scan-progress',
+    SELECTIONS_KEY: 'selections',
+    hostOf: url => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return 'link'; } },
+  },
 );
 
 const HOSTS = [

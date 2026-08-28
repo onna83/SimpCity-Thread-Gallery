@@ -2,6 +2,18 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.15.0 (timeline fork — unreleased)
+
+Substantial browsing and workflow features from Phase 3 of the timeline plan.
+
+- **Added resumable and bounded thread scanning.** The source controls can scan an inclusive page range, remember the highest successfully scanned page per thread, and append only newly detected pages on a later visit. One invocation remains capped at 250 pages, uses the existing large-thread warning, and keeps cancellation and failed-page reporting intact.
+- **Added a Pixeldrain single-file resolver.** `/u/<id>` links map to Pixeldrain's stable `/api/file/<id>` endpoint and still pass through byte-signature validation before they are recorded or archived. Lists remain deliberately unsupported until container expansion work.
+- **Made media-heavy grids easier to navigate.** Cards support arrow-key focus, Space selection and Enter viewing, including scroll-then-focus in the windowed masonry renderer. Dragging across blank grid space creates a marquee selection, and the selection menu can select every media item matching the current filters.
+- **Added opt-in embed posters.** Visible video/embed cards can lazily request the host page's social preview image through the existing bounded resolver/decode scheduler. The setting is off by default because it adds one host request per visible embed.
+- **Added resolution-aware browsing.** Dimensions learned by the viewer feed Unknown, SD, HD, Full HD and UHD filters plus ascending/descending resolution sorts. Closing the viewer refreshes a resolution-dependent grid after new dimensions are learned.
+- **Selections now survive reloads per thread.** Stable selection keys are stored separately from preferences and download history, bounded to 5,000 items for each of the 40 most recent threads.
+- **Added workflow safeguards and exports.** Safe mode blurs grid media previews, optional desktop notifications report completed scans and download queues, and the export menu can save stable extractor/id pairs in yt-dlp `--download-archive` format alongside URL text and JSON exports.
+
 ## 0.14.0 (timeline fork — unreleased)
 
 Closes the short archiving loop: see what remains, retry what failed, and keep the reply date with the saved record.

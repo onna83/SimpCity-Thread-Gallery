@@ -10,20 +10,22 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 
 ## What it does
 
-- Scans the current page, a chosen page, or an entire thread.
+- Scans the current page, a chosen page, a page range, an entire thread, or only pages added since the last successful scan.
 - Keeps author, date, page, reply, post, caption, source, and host provenance.
-- Shows masonry and uniform-grid layouts with search, download-state filtering, and oldest/newest sorting. Masonry renders only what is on screen.
+- Shows masonry and uniform-grid layouts with search, download-state and resolution filtering, plus date and resolution sorting. Masonry renders only what is on screen.
 - Collapses individual reply groups or all groups in the current filtered results.
 - Opens images and supported videos in a keyboard-friendly lightbox.
-- Resolves original images and direct video files where a host exposes them, including Bunkr's signed CDN URLs.
+- Resolves original images and direct video files where a host exposes them, including Bunkr's signed CDN URLs and Pixeldrain single-file links.
+- Optionally fetches embed posters lazily through the bounded media scheduler.
 - Selects downloadable media for validated, cancellable ZIP downloads.
 - Retries failed and verification-needed queue items without rebuilding the selection.
-- Selects all downloadable media in a reply with checked and indeterminate group state.
+- Selects all downloadable media in a reply or everything matching the active filters, supports drag marquee selection, and remembers selections per thread.
 - Splits large archives, records CRC32 values, merges byte-identical files, and can add `manifest.csv`.
-- Exports the current view's media URLs as `.txt` or `.json` for gallery-dl or yt-dlp.
+- Exports the current view's media URLs as `.txt` or `.json`, plus stable extractor/id pairs for yt-dlp `--download-archive`.
+- Offers an instant blur/safe-mode toggle and optional completion notifications for scans and ZIP queues.
 - Ignores media whose URL matches a fragment you list, before it is ever indexed.
 - Rebinds the gallery-wide keyboard shortcuts.
-- Stores preferences and verified download history locally, safely across multiple open tabs.
+- Stores preferences, scan progress, per-thread selections, and verified download history locally.
 - Supports desktop browsers and phone layouts.
 
 ## Install with Tampermonkey
@@ -41,7 +43,7 @@ This fork uses a **separate script identity** throughout, which is what lets bot
 |---|---|---|
 | `@name` | `SimpCity Thread Gallery` | `SimpCity Thread Gallery Timeline` |
 | `@namespace` | `local.simpcity.gallery.hybrid` | `local.simpcity.gallery.timeline` |
-| Version line | 0.9.7.x | 0.14.x |
+| Version line | 0.9.7.x | 0.15.x |
 | Settings + history | `sc-thread-gallery-*` | `sc-thread-gallery-timeline-*` |
 
 Storage is deliberately **not** shared. The fork starts with an empty download history, so items you already downloaded show as un-downloaded here until it builds its own record.
@@ -58,13 +60,13 @@ That listing serves the **stable** script from `main`. The timeline fork is not 
 
 ## Media support
 
-The gallery understands direct images and videos, XenForo attachments, and selected host-specific pages or embeds. Current host handling includes Goonbox, Pixhost, Imgbox, SimpCity image CDNs, Turbo, YouTube, Vimeo, Streamable, Redgifs, Dood-style hosts, and a small registry of generic video hosts.
+The gallery understands direct images and videos, XenForo attachments, and selected host-specific pages or embeds. Current host handling includes Goonbox, Pixhost, Imgbox, SimpCity image CDNs, Turbo, Bunkr, Pixeldrain single files, YouTube, Vimeo, Streamable, Redgifs, Dood-style hosts, and a small registry of generic video hosts.
 
 A preview may use a thumbnail or heuristic URL. Downloads have a stricter rule: the response bytes must match a supported image or video signature before the item is recorded as saved. When a video host does not expose a direct file, the gallery may open the host page for manual viewing instead.
 
 ## Full-thread scans and RAM
 
-Scanning fetches thread HTML without intentionally preloading media bytes. Even so, a very large thread can use substantial RAM because its reply metadata and extracted items remain in memory. By default, threads with 50 or more detected pages show a custom warning before the scan begins. You can disable that warning in the dialog and enable it again in Settings. Start with **This page** on older phones or memory-constrained machines, and cancel a full scan if the browser becomes sluggish.
+Scanning fetches thread HTML without intentionally preloading media bytes. Even so, a very large thread can use substantial RAM because its reply metadata and extracted items remain in memory. By default, scans of 50 or more pages show a custom warning before they begin. You can disable that warning in the dialog and enable it again in Settings. Start with **This page** or a small range on older phones or memory-constrained machines, and cancel a full scan if the browser becomes sluggish. The **New pages** action remembers the highest successfully scanned page for that thread and appends only later pages.
 
 ## Privacy
 
@@ -83,7 +85,7 @@ Use the GitHub bug or feature template once the public repository is connected. 
 ## Development and releases
 
 - `main` contains the stable v0.9.7.1 release and is frozen with respect to this fork.
-- `timeline` (this branch) carries the UI/UX overhaul on its own 0.10.x version line.
+- `fork` (this branch) carries the UI/UX overhaul on its own version line.
 - `develop` is the integration branch for ongoing development.
 - Release work is completed on feature branches and promoted to `main` after checks pass.
 - Stable snapshots use annotated Git tags such as `v0.9.5`.

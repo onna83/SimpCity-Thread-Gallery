@@ -48,8 +48,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '0.14.0');
-  assert.match(source, /const APP_VERSION = '0\.14\.0'/);
+  assert.equal(metadataValue('version'), '0.15.0');
+  assert.match(source, /const APP_VERSION = '0\.15\.0'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -177,14 +177,14 @@ test('large-thread warning preference is persisted through existing settings sto
 });
 
 test('full-thread scanning uses a custom warning and cancellable HTML-only requests', () => {
-  const start = source.indexOf('async function scanThread()');
+  const start = source.indexOf('async function scanThread(requested = {})');
   const end = source.indexOf('function scanCurrentPage()', start);
   const scanSource = source.slice(start, end);
 
   assert.match(source, /const LARGE_THREAD_WARNING_PAGES = 50/);
   assert.match(source, /function confirmLargeThreadScan/);
   assert.match(source, /data-confirm-preference/);
-  assert.match(scanSource, /detectedPages >= LARGE_THREAD_WARNING_PAGES/);
+  assert.match(scanSource, /pagesToScan >= LARGE_THREAD_WARNING_PAGES/);
   assert.match(scanSource, /signal: controller\.signal/);
   assert.match(scanSource, /response\.text\(\)/);
   assert.match(scanSource, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
@@ -268,6 +268,7 @@ test('reply-level selection derives checked and indeterminate state from the dat
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => { invalidations++; },
+      persistThreadSelection: () => {},
       isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
       wasDownloaded: item => Boolean(item.downloaded),
     },
@@ -313,6 +314,7 @@ test('reply-level selection respects the active media type view', () => {
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      persistThreadSelection: () => {},
       isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
       wasDownloaded: item => Boolean(item.downloaded),
     },
@@ -355,6 +357,7 @@ test('reply selection works while collapsed and spans all indexed reply items', 
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      persistThreadSelection: () => {},
       isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
       wasDownloaded: item => Boolean(item.downloaded),
     },
@@ -421,7 +424,7 @@ test('clearing the selection drops the anchor and its filter, not an active down
     'function clearSelection',
     'function clearSelectionAndRefresh',
     ['clearSelection'],
-    { state, invalidateVisibleItems: () => {} },
+    { state, invalidateVisibleItems: () => {}, persistThreadSelection: () => {} },
   );
 
   assert.equal(clearSelection(), true);
@@ -515,7 +518,10 @@ test('active filters are visible and individually reversible', () => {
     'function activeFacetChips',
     'function facetOptions',
     ['activeFacetChips', 'facetClearPatch'],
-    { DOWNLOAD_STATE_LABELS: { 'not-downloaded': 'Not downloaded', downloaded: 'Downloaded' } },
+    {
+      DOWNLOAD_STATE_LABELS: { 'not-downloaded': 'Not downloaded', downloaded: 'Downloaded' },
+      RESOLUTION_LABELS: { hd: '720p+' },
+    },
   );
   const labels = { image: 'Images' };
 
@@ -523,9 +529,9 @@ test('active filters are visible and individually reversible', () => {
 
   const chips = plain(activeFacetChips({
     filter: 'image', query: '  beach ', authorFilter: 'anon', hostFilter: 'bunkr.cr',
-    downloadState: 'not-downloaded', selectedOnly: true,
+    downloadState: 'not-downloaded', resolutionFilter: 'hd', selectedOnly: true,
   }, labels));
-  assert.deepEqual(chips.map(chip => chip.facet), ['filter', 'query', 'author', 'host', 'download', 'selected']);
+  assert.deepEqual(chips.map(chip => chip.facet), ['filter', 'query', 'author', 'host', 'download', 'resolution', 'selected']);
   assert.equal(chips[0].value, 'Images');
   assert.equal(chips[1].value, 'beach');
   assert.equal(chips[4].value, 'Not downloaded');
@@ -536,7 +542,7 @@ test('active filters are visible and individually reversible', () => {
 
   assert.deepEqual(plain(facetClearPatch('host')), { hostFilter: 'all' });
   assert.deepEqual(plain(facetClearPatch('all')), {
-    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all',
+    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all', resolutionFilter: 'all',
   });
   assert.equal(facetClearPatch('nonsense'), null);
 });
@@ -697,7 +703,7 @@ test('facet counts answer what each value would give, and the summary states the
   // One evaluation per item feeds both lists: the shared facets decide whether
   // it counts at all, then each list ignores only its own.
   assert.match(source, /const parts = filterParts\(item, q\);/);
-  assert.match(source, /if \(!parts\.type \|\| !parts\.selected \|\| !parts\.download \|\| !parts\.query\) return;/);
+  assert.match(source, /if \(!parts\.type \|\| !parts\.selected \|\| !parts\.download \|\| !parts\.resolution \|\| !parts\.query\) return;/);
   assert.match(source, /if \(item\.author && parts\.host\)/);
   assert.match(source, /if \(parts\.author\) \{/);
   // Counts move with every other facet, so this cache cannot key on the dataset.
@@ -882,6 +888,7 @@ test('reply-level selection respects the active search, author and host filters'
       isDownloadableMedia: item => item.downloadable,
       itemSourceHost: item => item.host,
       invalidateVisibleItems: () => {},
+      persistThreadSelection: () => {},
       isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
       wasDownloaded: item => Boolean(item.downloaded),
     },
@@ -1107,12 +1114,13 @@ test('stored midnight and graphite settings migrate to dark plus an accent', () 
       THEME_MODES: ['dark', 'light'],
       ACCENT_MODES: ACCENTS,
       DOWNLOAD_STATES: ['all', 'not-downloaded', 'downloaded'],
-      SORT_MODES: ['thread-asc', 'thread-desc', 'author', 'host', 'type', 'date-asc', 'date-desc'],
+      RESOLUTION_FILTERS: ['all', 'unknown', 'sd', 'hd', 'fhd', 'uhd'],
+      SORT_MODES: ['thread-asc', 'thread-desc', 'author', 'host', 'type', 'date-asc', 'date-desc', 'resolution-asc', 'resolution-desc'],
       LAYOUT_MODES: ['masonry', 'grid'],
       LEGACY_THEME_ACCENTS: { midnight: 'indigo', graphite: 'amber' },
       VIEW_PAGE_SIZES: [40, 60, 100, 200, 300, 500],
       normalizedShortcuts: () => ({}),
-      DEFAULT_SETTINGS: { filter: 'all', downloadState: 'all', sort: 'thread-asc', groupBy: 'none', perPage: 60, theme: 'dark', accent: 'blue', layoutMode: 'masonry', cardScale: 100, downloadConcurrency: 2, zipPartSizeMb: 300, zipPartMaxFiles: 24, archiveLayout: 'page-author', blockPatterns: '' },
+      DEFAULT_SETTINGS: { filter: 'all', downloadState: 'all', resolutionFilter: 'all', sort: 'thread-asc', groupBy: 'none', perPage: 60, theme: 'dark', accent: 'blue', layoutMode: 'masonry', cardScale: 100, downloadConcurrency: 2, zipPartSizeMb: 300, zipPartMaxFiles: 24, archiveLayout: 'page-author', blockPatterns: '' },
     },
   );
 
@@ -2349,4 +2357,112 @@ test('the fallback is reached from both ends', () => {
   const viewer = source.slice(source.indexOf('const mountHostPlayer'), source.indexOf('function openLightbox'));
   assert.match(viewer, /bindViewerVideoLifecycle\(video, stage, \(\) => \{[\s\S]*?mountHostPlayer\(\);/);
   assert.match(viewer, /!VIDEO_EXT\.test\(direct\.url\)/, 'the same guard as the card');
+});
+
+test('Pixeldrain single-file links resolve through the stable file API', async () => {
+  const { resolvePixeldrainFile } = evaluateSlice(
+    'function resolvePixeldrainFile',
+    'async function resolveCandidate',
+    ['resolvePixeldrainFile'],
+    {
+      normalizeSourceUrl: value => value || '',
+      isPixeldrainFileUrl: url => /^https:\/\/pixeldrain\.com\/u\/[^/]+/.test(url),
+      hostMediaId: url => new URL(url).pathname.split('/').filter(Boolean)[1] || '',
+      failedResolution: (reason, mediaType, extras) => ({ status: 'failed', reason, mediaType, ...extras }),
+      resolutionResult: (status, url, method, mediaType, extras) => ({ status, url, method, mediaType, ...extras }),
+    },
+  );
+  const resolved = await resolvePixeldrainFile({ type: 'video', url: 'https://pixeldrain.com/u/abc-123' });
+  assert.equal(resolved.status, 'confirmed');
+  assert.equal(resolved.url, 'https://pixeldrain.com/api/file/abc-123');
+  assert.equal(resolved.mediaTypeUnknown, true);
+  assert.match(source, /id: 'pixeldrain'[\s\S]*?mediaId: url => url\.pathname\.match\(\/\^\\\/u\\\//);
+});
+
+test('thread scans support bounded ranges and resume after the highest successful page', () => {
+  const scanStart = source.indexOf('async function scanThread(requested = {})');
+  const scanEnd = source.indexOf('function scanCurrentPage()', scanStart);
+  const scanSource = source.slice(scanStart, scanEnd);
+  assert.match(scanSource, /const endPage = Math\.min\(requestedEnd, startPage \+ 249\)/);
+  assert.match(scanSource, /new Set\(state\.items\.map\(itemDedupeKey\)\)/);
+  assert.match(scanSource, /rememberScannedPage\(page, pageUrl\)/);
+  assert.match(scanSource, /scanThread\(\{ start, end: detected, append: true/);
+  assert.match(scanSource, /const first = Math\.min\(from, to\)/);
+  assert.match(scanSource, /scanThread\(\{ start: first, end: last, append: false/);
+  assert.match(source, /data-action="scan-new"/);
+  assert.match(source, /data-action="scan-range"/);
+  assert.match(source, /const SCAN_PROGRESS_KEY = 'sc-thread-gallery-timeline-scan-progress-v1'/);
+});
+
+test('resolution bands use the media short edge and keep unknown dimensions explicit', () => {
+  const { resolutionPixels, resolutionBand } = evaluateSlice(
+    'function resolutionPixels',
+    'function visibleItems',
+    ['resolutionPixels', 'resolutionBand'],
+  );
+  assert.equal(resolutionBand({ mediaDimensions: { width: 1280, height: 720 } }), 'hd');
+  assert.equal(resolutionBand({ mediaDimensions: { width: 1080, height: 1920 } }), 'fhd');
+  assert.equal(resolutionBand({ mediaDimensions: { width: 3840, height: 2160 } }), 'uhd');
+  assert.equal(resolutionBand({}), 'unknown');
+  assert.equal(resolutionPixels({ mediaDimensions: { width: 1920, height: 1080 } }), 2073600);
+  assert.match(source, /'resolution-asc': 'Resolution low to high'/);
+  assert.match(source, /data-resolution-filter/);
+});
+
+test('grid keyboard navigation and marquee geometry are deterministic', () => {
+  const { gridNavigationTarget, rectanglesIntersect } = evaluateSlice(
+    'function gridNavigationTarget',
+    'function setSelectOptions',
+    ['gridNavigationTarget', 'rectanglesIntersect'],
+  );
+  const keys = ['a', 'b', 'c', 'd', 'e', 'f'];
+  assert.equal(gridNavigationTarget(keys, '', 'right', 3), 'a');
+  assert.equal(gridNavigationTarget(keys, 'b', 'right', 3), 'c');
+  assert.equal(gridNavigationTarget(keys, 'e', 'up', 3), 'b');
+  assert.equal(gridNavigationTarget(keys, 'e', 'down', 3), 'f');
+  assert.equal(rectanglesIntersect({ left: 0, right: 10, top: 0, bottom: 10 }, { left: 9, right: 20, top: 9, bottom: 20 }), true);
+  assert.equal(rectanglesIntersect({ left: 0, right: 10, top: 0, bottom: 10 }, { left: 11, right: 20, top: 0, bottom: 10 }), false);
+  assert.match(source, /tabindex="-1" data-key=/);
+  assert.match(source, /scroll\.scrollTop = Math\.max\(0, cell\.y - 80\);\s*\r?\n\s*updateFlowWindow\(\)/);
+});
+
+test('selection persistence, matching selection and marquee selection are wired to stable keys', () => {
+  assert.match(source, /const SELECTIONS_KEY = 'sc-thread-gallery-timeline-selections-v1'/);
+  assert.match(source, /new Set\(Array\.isArray\(selectionStore\[storedSelectionKey\]\)/);
+  assert.match(source, /if \(persistedSelectionKeys\.has\(key\)\) state\.selected\.add\(key\)/);
+  assert.match(source, /persistedSelectionKeys = new Set\(\[\.\.\.state\.selected\]\.slice\(0, 5000\)\)/);
+  assert.match(source, /data-action="select-matching"/);
+  assert.match(source, /selectItems\(visibleItems\(\)\.filter\(isMediaItem\)\)/);
+  assert.match(source, /marquee\.className = 'scg-marquee'/);
+  assert.match(source, /app\.appendChild\(marquee\)/);
+  assert.match(source, /addEventListener\('pointercancel', cancel\)/);
+  assert.match(source, /rectanglesIntersect\(selectionRect, node\.getBoundingClientRect\(\)\)/);
+});
+
+test('optional posters, safe mode and completion notifications remain explicitly gated', () => {
+  assert.match(source, /if \(!state\.embedPosters[\s\S]*?return;/);
+  assert.match(source, /kind: 'poster'/);
+  assert.match(source, /mediaFromHtml\(await requestText\(page[\s\S]*?page, 'image'\)/);
+  assert.match(source, /\.safe-mode \.scg-card img/);
+  assert.match(source, /data-setting-safe-mode/);
+  assert.match(source, /if \(!state\.completionNotifications \|\| typeof Notification !== 'function' \|\| Notification\.permission !== 'granted'\) return false/);
+  assert.match(source, /sendCompletionNotification\('Gallery scan finished'/);
+  assert.match(source, /sendCompletionNotification\('Gallery download finished'/);
+});
+
+test('yt-dlp archive export emits only stable extractor and media id pairs', () => {
+  const { ytDlpArchiveEntry } = evaluateSlice(
+    'function ytDlpArchiveEntry',
+    'function exportYtDlpArchive',
+    ['ytDlpArchiveEntry'],
+    {
+      normalizeSourceUrl: value => value || '',
+      hostDefinition: url => ({ id: new URL(url).hostname.includes('youtu') ? 'youtube' : 'generic-video-host' }),
+      hostMediaId: url => new URL(url).searchParams.get('v') || '',
+    },
+  );
+  assert.equal(ytDlpArchiveEntry({ url: 'https://youtube.com/watch?v=video123' }), 'youtube video123');
+  assert.equal(ytDlpArchiveEntry({ url: 'https://example.test/watch?v=video123' }), '');
+  assert.match(source, /data-action="export-yt-dlp-archive"/);
+  assert.match(source, /new Set\(scope\.items\.map\(ytDlpArchiveEntry\)\.filter\(Boolean\)\)/);
 });

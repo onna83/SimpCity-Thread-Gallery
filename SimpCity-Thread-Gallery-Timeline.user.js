@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.14.0
-// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing, verified downloads, Bunkr resolution and URL list export.
+// @version      0.15.0
+// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing, resumable scans, host resolution, selection and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -22,13 +22,15 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.14.0';
+  const APP_VERSION = '0.15.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
   const STORAGE_MIGRATION_KEY = 'sc-thread-gallery-timeline-storage-migrated-v1';
   const LARGE_THREAD_WARNING_PAGES = 50;
   const RATIO_CACHE_KEY = 'sc-thread-gallery-timeline-ratio-cache-v1';
+  const SCAN_PROGRESS_KEY = 'sc-thread-gallery-timeline-scan-progress-v1';
+  const SELECTIONS_KEY = 'sc-thread-gallery-timeline-selections-v1';
   const TAB_SYNC_CHANNEL = 'sc-thread-gallery-timeline-sync-v1';
   const RATIO_CACHE_LIMIT = 4000;
   const DEFAULT_RATIO = 0.72;
@@ -38,6 +40,7 @@
   const DEFAULT_SETTINGS = Object.freeze({
     filter: 'all',
     downloadState: 'all',
+    resolutionFilter: 'all',
     compact: false,
     sort: 'thread-asc',
     groupBy: 'none',
@@ -53,6 +56,9 @@
     includeManifest: true,
     dedupeContent: true,
     warnLargeThreadScan: true,
+    embedPosters: false,
+    completionNotifications: false,
+    safeMode: false,
     accent: 'blue',
     blockPatterns: '',
   });
@@ -108,6 +114,8 @@
     'not-downloaded': 'Not downloaded yet',
     downloaded: 'Already downloaded',
   });
+  const RESOLUTION_FILTERS = Object.freeze(['all', 'unknown', 'sd', 'hd', 'fhd', 'uhd']);
+  const RESOLUTION_LABELS = Object.freeze({ all: 'Any resolution', unknown: 'Unknown', sd: 'SD (<720p)', hd: 'HD (720–1079p)', fhd: 'Full HD (1080–2159p)', uhd: 'UHD (2160p+)' });
   // One collator for the whole script. Passing an options object to
   // localeCompare builds a fresh one per call, and sorting a large thread by
   // author is tens of thousands of comparisons -- measured at 135ms for 5,000
@@ -122,6 +130,8 @@
     type: 'Media type',
     'date-asc': 'Posted oldest first',
     'date-desc': 'Posted newest first',
+    'resolution-asc': 'Resolution low to high',
+    'resolution-desc': 'Resolution high to low',
   });
   const SORT_MODES = Object.freeze(Object.keys(SORT_LABELS));
 
@@ -323,6 +333,7 @@
     items: [],
     filter: ['all', 'image', 'video', 'link', 'text'].includes(savedSettings.filter) ? savedSettings.filter : 'all',
     downloadState: DOWNLOAD_STATES.includes(savedSettings.downloadState) ? savedSettings.downloadState : 'all',
+    resolutionFilter: RESOLUTION_FILTERS.includes(savedSettings.resolutionFilter) ? savedSettings.resolutionFilter : 'all',
     query: '',
     compact: Boolean(savedSettings.compact),
     sort: SORT_MODES.includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
@@ -344,6 +355,9 @@
     includeManifest: savedSettings.includeManifest !== false,
     dedupeContent: savedSettings.dedupeContent !== false,
     warnLargeThreadScan: savedSettings.warnLargeThreadScan !== false,
+    embedPosters: Boolean(savedSettings.embedPosters),
+    completionNotifications: Boolean(savedSettings.completionNotifications),
+    safeMode: Boolean(savedSettings.safeMode),
     blockPatterns: typeof savedSettings.blockPatterns === 'string' ? savedSettings.blockPatterns : DEFAULT_SETTINGS.blockPatterns,
     shortcuts: normalizedShortcuts(savedSettings.shortcuts),
     authorFilter: 'all',
@@ -361,6 +375,7 @@
     sourcePage: 1,
     selected: new Set(),
     selectionAnchor: null,
+    gridFocusKey: '',
     collapsedReplies: new Set(),
     scanning: false,
     cancelScan: false,
@@ -763,6 +778,53 @@
     } catch { return { slug: 'thread', id: '' }; }
   }
 
+  let scanProgress = (() => {
+    const saved = storage.get(SCAN_PROGRESS_KEY, {});
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  })();
+
+  function scanProgressKey(rawUrl = location.href) {
+    const identity = threadIdentity(rawUrl);
+    return identity.id || threadBaseUrl(rawUrl);
+  }
+
+  function highestScannedPage(rawUrl = location.href) {
+    return Math.max(0, Number(scanProgress[scanProgressKey(rawUrl)] || 0));
+  }
+
+  function rememberScannedPage(page, rawUrl = location.href) {
+    const key = scanProgressKey(rawUrl);
+    const stored = storage.get(SCAN_PROGRESS_KEY, {});
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) scanProgress = { ...scanProgress, ...stored };
+    const next = Math.max(highestScannedPage(rawUrl), Math.max(0, Number(stored?.[key]) || 0), Math.max(0, Number(page) || 0));
+    if (!next || scanProgress[key] === next) return next;
+    scanProgress[key] = next;
+    const entries = Object.entries(scanProgress);
+    if (entries.length > 200) scanProgress = Object.fromEntries(entries.slice(-200));
+    try { storage.set(SCAN_PROGRESS_KEY, scanProgress); }
+    catch { /* Scan progress is a convenience; storage failure must not fail the scan. */ }
+    return next;
+  }
+
+  let selectionStore = (() => {
+    const saved = storage.get(SELECTIONS_KEY, {});
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  })();
+  const storedSelectionKey = scanProgressKey();
+  let persistedSelectionKeys = new Set(Array.isArray(selectionStore[storedSelectionKey]) ? selectionStore[storedSelectionKey].slice(0, 5000) : []);
+
+  function persistThreadSelection() {
+    persistedSelectionKeys = new Set([...state.selected].slice(0, 5000));
+    const stored = storage.get(SELECTIONS_KEY, {});
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) selectionStore = { ...selectionStore, ...stored };
+    if (persistedSelectionKeys.size) selectionStore[storedSelectionKey] = [...persistedSelectionKeys];
+    else delete selectionStore[storedSelectionKey];
+    const entries = Object.entries(selectionStore);
+    if (entries.length > 40) selectionStore = Object.fromEntries(entries.slice(-40));
+    try { storage.set(SELECTIONS_KEY, selectionStore); }
+    catch { /* Selection remains valid in memory if userscript storage is full. */ }
+  }
+
   function threadTitle() {
     const heading = document.querySelector('h1.p-title-value, .p-title-value, h1');
     if (heading) {
@@ -859,6 +921,9 @@
     Object.freeze({
       id: 'youtube', media: 'video',
       matches: host => /(?:^|\.)(?:youtube\.com|youtu\.be)$/i.test(host),
+      mediaId: url => url.hostname.replace(/^www\./, '') === 'youtu.be'
+        ? url.pathname.split('/').filter(Boolean)[0] || ''
+        : url.searchParams.get('v') || url.pathname.match(/\/(?:shorts|embed)\/([^/?]+)/)?.[1] || '',
       embed: url => {
         const id = url.hostname.replace(/^www\./, '') === 'youtu.be'
           ? url.pathname.split('/').filter(Boolean)[0]
@@ -869,6 +934,7 @@
     Object.freeze({
       id: 'vimeo', media: 'video',
       matches: host => /(?:^|\.)vimeo\.com$/i.test(host),
+      mediaId: url => url.pathname.match(/\/(\d+)/)?.[1] || '',
       embed: url => {
         const id = url.pathname.match(/\/(\d+)/)?.[1];
         return id ? `https://player.vimeo.com/video/${id}` : url.href;
@@ -877,6 +943,7 @@
     Object.freeze({
       id: 'streamable', media: 'video',
       matches: host => /(?:^|\.)streamable\.com$/i.test(host),
+      mediaId: url => url.pathname.split('/').filter(Boolean).pop() || '',
       embed: url => {
         const id = url.pathname.split('/').filter(Boolean).pop();
         return id ? `https://streamable.com/e/${encodeURIComponent(id)}` : url.href;
@@ -885,6 +952,7 @@
     Object.freeze({
       id: 'redgifs', media: 'video',
       matches: host => /(?:^|\.)redgifs\.com$/i.test(host),
+      mediaId: url => url.pathname.split('/').filter(Boolean).pop() || '',
       embed: url => {
         const id = url.pathname.split('/').filter(Boolean).pop();
         return id ? `https://www.redgifs.com/ifr/${encodeURIComponent(id)}` : url.href;
@@ -902,6 +970,13 @@
       id: 'bunkr', media: 'video',
       matches: host => /(?:^|\.)bunkr+\.[a-z]{2,6}$/i.test(host),
       mediaId: url => url.pathname.match(/^\/f\/([^/?#]+)/i)?.[1] || '',
+    }),
+    Object.freeze({
+      // A /u/ URL is one stable file. Pixeldrain /l/ lists deliberately stay
+      // with the generic host until container expansion lands in Phase 4.
+      id: 'pixeldrain', media: 'video',
+      matches: host => /(?:^|\.)pixeldrain\.com$/i.test(host),
+      mediaId: url => url.pathname.match(/^\/u\/([^/?#]+)/i)?.[1] || '',
     }),
     Object.freeze({
       id: 'generic-video-host', media: 'video',
@@ -947,9 +1022,12 @@
   // behind it and must stay out of the ZIP queue.
   const isBunkrFileUrl = rawUrl => hostDefinition(rawUrl)?.id === 'bunkr' && Boolean(hostMediaId(rawUrl));
 
+  const isPixeldrainFileUrl = rawUrl => hostDefinition(rawUrl)?.id === 'pixeldrain' && Boolean(hostMediaId(rawUrl));
+
   function hasDirectResolver(item) {
     if (!item) return false;
-    return hostDefinition(item.url)?.id === 'turbo' || isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink);
+    return hostDefinition(item.url)?.id === 'turbo' || isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink) ||
+      isPixeldrainFileUrl(item.url) || isPixeldrainFileUrl(item.originalLink);
   }
 
   function isDownloadableMedia(item) {
@@ -1066,6 +1144,7 @@
       storage.set(SETTINGS_KEY, {
         filter: state.filter,
         downloadState: state.downloadState,
+        resolutionFilter: state.resolutionFilter,
         compact: state.compact,
         sort: state.sort,
         groupBy: state.groupBy,
@@ -1082,6 +1161,9 @@
         includeManifest: state.includeManifest,
         dedupeContent: state.dedupeContent,
         warnLargeThreadScan: state.warnLargeThreadScan,
+        embedPosters: state.embedPosters,
+        completionNotifications: state.completionNotifications,
+        safeMode: state.safeMode,
         blockPatterns: state.blockPatterns,
         shortcuts: state.shortcuts,
       });
@@ -1126,6 +1208,7 @@
     app.style.setProperty('--scg-grid-compact-height', `${Math.round(312 * scale)}px`);
     app.classList.toggle('compact', state.compact);
     app.classList.toggle('filters-collapsed', state.filtersCollapsed);
+    app.classList.toggle('safe-mode', state.safeMode);
     const toast = document.getElementById('scg-tl-toast');
     if (toast) { toast.dataset.theme = state.theme; toast.dataset.accent = state.accent; }
     const launch = document.getElementById('scg-tl-launch');
@@ -1137,6 +1220,7 @@
       filterToggle.classList.toggle('active', !state.filtersCollapsed);
     }
     setIconButton(app.querySelector('[data-action="density"]'), 'layout', state.compact ? 'Comfortable cards' : 'Compact cards');
+    setIconButton(app.querySelector('[data-action="safe-mode"]'), 'image', state.safeMode ? 'Show media' : 'Blur media');
     const themeIndex = Math.max(0, THEME_MODES.indexOf(state.theme));
     const nextTheme = THEME_MODES[(themeIndex + 1) % THEME_MODES.length];
     const themeButton = app.querySelector('[data-action="theme"]');
@@ -1176,6 +1260,7 @@
       state.hostFilter && state.hostFilter !== 'all',
       state.groupBy !== DEFAULT_SETTINGS.groupBy,
       state.downloadState !== DEFAULT_SETTINGS.downloadState,
+      state.resolutionFilter !== DEFAULT_SETTINGS.resolutionFilter,
       Boolean(state.selectedOnly),
     ].filter(Boolean).length;
   }
@@ -1434,6 +1519,7 @@
       if (seen.has(key)) return;
       seen.add(key);
       item.selectionKey = key;
+      if (persistedSelectionKeys.has(key)) state.selected.add(key);
       item.searchText = `${item.author || ''} ${item.title || ''} ${item.caption || ''} ${item.text || ''} ${item.url || ''} ${item.originalLink || ''} ${item.postNumber || ''} ${item.pageNumber || ''}`.toLowerCase();
       // Derived once, here, because each of these parses a URL and every one of
       // them used to be recomputed inside a per-frame or per-keystroke loop over
@@ -1732,6 +1818,25 @@
     });
   }
 
+  function resolvePixeldrainFile(item) {
+    const filePage = [item?.originalLink, item?.url]
+      .map(candidate => normalizeSourceUrl(candidate))
+      .find(isPixeldrainFileUrl) || '';
+    const id = hostMediaId(filePage);
+    if (!id) {
+      return failedResolution('This Pixeldrain link is not a single /u/ file', item?.type === 'image' ? 'image' : 'video', {
+        method: 'pixeldrain', fallbackUrl: filePage || undefined,
+      });
+    }
+    return resolutionResult('confirmed', `https://pixeldrain.com/api/file/${encodeURIComponent(id)}`, 'pixeldrain-file-api',
+      item?.type === 'image' ? 'image' : 'video', {
+        fallbackUrl: filePage,
+        // Pixeldrain IDs do not encode the content type; byte validation owns
+        // the final image/video verdict, exactly as it does for Bunkr.
+        mediaTypeUnknown: true,
+      });
+  }
+
   async function resolveCandidate(item) {
     if (!item) return failedResolution('Media item is missing', '');
     item.resolution ||= {};
@@ -1771,6 +1876,7 @@
       try { sourceUrl = new URL(normalizeSourceUrl(item.originalLink)); } catch { sourceUrl = null; }
       const imageId = sourceUrl ? sourceDefinition?.imageId?.(sourceUrl) : '';
       if (isBunkrFileUrl(item.originalLink)) return resolveBunkrFile(item);
+      if (isPixeldrainFileUrl(item.originalLink) || isPixeldrainFileUrl(item.url)) return resolvePixeldrainFile(item);
       if (sourceDefinition?.id === 'goonbox' && imageId) {
         try {
           const payload = JSON.parse(await requestText(`https://goonbox.cr/api/images/${imageId}`));
@@ -1797,6 +1903,7 @@
     if (seed?.url && VIDEO_EXT.test(seed.url)) return resolutionResult('confirmed', seed.url, seed.method || 'direct-video', 'video');
     if (hostDefinition(item.url)?.id === 'turbo') return resolveTurboVideo(item);
     if (isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink)) return resolveBunkrFile(item);
+    if (isPixeldrainFileUrl(item.url) || isPixeldrainFileUrl(item.originalLink)) return resolvePixeldrainFile(item);
     try {
       const found = mediaFromHtml(await requestText(item.url), item.url, 'video');
       if (found && VIDEO_EXT.test(found)) return resolutionResult('confirmed', found, `${hostDefinition(item.url)?.id || 'generic'}-video-page`, 'video');
@@ -1920,6 +2027,30 @@
     toast.classList.add('show');
     clearTimeout(notify.timer);
     notify.timer = setTimeout(() => toast.classList.remove('show'), duration);
+  }
+
+  function sendCompletionNotification(title, body) {
+    if (!state.completionNotifications || typeof Notification !== 'function' || Notification.permission !== 'granted') return false;
+    try {
+      new Notification(title, { body, tag: `${APP_ID}-completion` });
+      return true;
+    } catch { return false; }
+  }
+
+  async function setCompletionNotifications(enabled) {
+    if (!enabled) {
+      commitState({ completionNotifications: false }, { persist: true, shellOnly: true });
+      return false;
+    }
+    if (typeof Notification !== 'function') {
+      notify('Desktop notifications are not available in this browser.', 5200);
+      return false;
+    }
+    const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+    const granted = permission === 'granted';
+    commitState({ completionNotifications: granted }, { persist: true, shellOnly: true });
+    if (!granted) notify('Notification permission was not granted.', 5200);
+    return granted;
   }
 
   function confirmAction({ title = 'Confirm action', message, confirmLabel = 'Continue', danger = false, preferenceLabel = '' } = {}) {
@@ -2099,18 +2230,23 @@
     result.add.forEach(key => { if (!state.selected.has(key)) { state.selected.add(key); changed = true; } });
     result.remove.forEach(key => { if (state.selected.delete(key)) changed = true; });
     state.selectionAnchor = result.anchorKey;
-    if (changed) invalidateVisibleItems({ selection: true });
+    if (changed) {
+      invalidateVisibleItems({ selection: true });
+      persistThreadSelection();
+    }
     return changed;
   }
 
   function clearSelection() {
     state.selectionAnchor = null;
+    state.gridFocusKey = '';
     if (!state.selected.size) return false;
     state.selected.clear();
     // "Selected only" with nothing selected is an empty grid with no visible
     // cause, so the filter that depended on the selection goes with it.
     state.selectedOnly = false;
     invalidateVisibleItems({ selection: true });
+    persistThreadSelection();
     return true;
   }
 
@@ -2151,6 +2287,7 @@
     return {
       filter: ['all', 'image', 'video', 'link', 'text'].includes(input.filter) ? input.filter : DEFAULT_SETTINGS.filter,
       downloadState: DOWNLOAD_STATES.includes(input.downloadState) ? input.downloadState : DEFAULT_SETTINGS.downloadState,
+      resolutionFilter: RESOLUTION_FILTERS.includes(input.resolutionFilter) ? input.resolutionFilter : DEFAULT_SETTINGS.resolutionFilter,
       compact: Boolean(input.compact),
       sort: SORT_MODES.includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
       groupBy: input.groupBy === 'reply' ? 'reply' : DEFAULT_SETTINGS.groupBy,
@@ -2171,6 +2308,9 @@
       includeManifest: input.includeManifest !== false,
       dedupeContent: input.dedupeContent !== false,
       warnLargeThreadScan: input.warnLargeThreadScan !== false,
+      embedPosters: Boolean(input.embedPosters),
+      completionNotifications: Boolean(input.completionNotifications),
+      safeMode: Boolean(input.safeMode),
       blockPatterns: typeof input.blockPatterns === 'string' ? input.blockPatterns.slice(0, 2000) : DEFAULT_SETTINGS.blockPatterns,
       shortcuts: normalizedShortcuts(input.shortcuts),
     };
@@ -2180,6 +2320,7 @@
     return normalizedPreferences({
       filter: state.filter,
       downloadState: state.downloadState,
+      resolutionFilter: state.resolutionFilter,
       compact: state.compact,
       sort: state.sort,
       groupBy: state.groupBy,
@@ -2196,6 +2337,9 @@
       includeManifest: state.includeManifest,
       dedupeContent: state.dedupeContent,
       warnLargeThreadScan: state.warnLargeThreadScan,
+      embedPosters: state.embedPosters,
+      completionNotifications: state.completionNotifications,
+      safeMode: state.safeMode,
       blockPatterns: state.blockPatterns,
       shortcuts: state.shortcuts,
     });
@@ -2277,6 +2421,9 @@
     const manifest = panel.querySelector('[data-setting-include-manifest]');
     const dedupeContent = panel.querySelector('[data-setting-dedupe-content]');
     const warnLargeScan = panel.querySelector('[data-setting-warn-large-scan]');
+    const embedPosters = panel.querySelector('[data-setting-embed-posters]');
+    const completionNotifications = panel.querySelector('[data-setting-completion-notifications]');
+    const safeMode = panel.querySelector('[data-setting-safe-mode]');
     if (themeSelect) themeSelect.value = state.theme;
     if (accentSelect) accentSelect.value = state.accent;
     if (densitySelect) densitySelect.value = state.compact ? 'compact' : 'comfortable';
@@ -2290,6 +2437,9 @@
     if (manifest) manifest.checked = state.includeManifest;
     if (dedupeContent) dedupeContent.checked = state.dedupeContent;
     if (warnLargeScan) warnLargeScan.checked = state.warnLargeThreadScan;
+    if (embedPosters) embedPosters.checked = state.embedPosters;
+    if (completionNotifications) completionNotifications.checked = state.completionNotifications;
+    if (safeMode) safeMode.checked = state.safeMode;
     const blockPatterns = panel.querySelector('[data-setting-block-patterns]');
     // Never stomp a half-typed pattern list from an unrelated refresh.
     if (blockPatterns && document.activeElement !== blockPatterns) blockPatterns.value = state.blockPatterns;
@@ -2453,6 +2603,34 @@
     notify(`Exported ${rows.length} ${scope.label} media ${rows.length === 1 ? 'URL' : 'URLs'}.`);
   }
 
+  // yt-dlp archives contain extractor/id pairs, not URLs. Only hosts whose
+  // archive identity is stable are included; a guessed generic extractor name
+  // would make a syntactically valid archive that silently fails to match.
+  function ytDlpArchiveEntry(item) {
+    for (const source of [item?.originalLink, item?.url].map(candidate => normalizeSourceUrl(candidate)).filter(Boolean)) {
+      const definition = hostDefinition(source);
+      const extractor = {
+        youtube: 'youtube',
+        vimeo: 'vimeo',
+        streamable: 'streamable',
+        redgifs: 'redgifs',
+      }[definition?.id];
+      const id = hostMediaId(source);
+      if (extractor && id) return `${extractor} ${id}`;
+    }
+    return '';
+  }
+
+  function exportYtDlpArchive() {
+    const scope = mediaExportScope();
+    const entries = [...new Set(scope.items.map(ytDlpArchiveEntry).filter(Boolean))];
+    if (!entries.length) return notify('No matching items have a stable yt-dlp archive identity.', 5000);
+    const skipped = scope.items.length - entries.length;
+    const name = `${threadFilePrefix()}-${scope.label}-yt-dlp-archive-${timestampForFilename()}.txt`;
+    saveBlob(new Blob([`${entries.join('\n')}\n`], { type: 'text/plain;charset=utf-8' }), name);
+    notify(`Exported ${entries.length} yt-dlp archive ${entries.length === 1 ? 'entry' : 'entries'}${skipped > 0 ? `; skipped ${skipped} unsupported ${skipped === 1 ? 'item' : 'items'}` : ''}.`);
+  }
+
   function copyMediaUrls() {
     const scope = mediaExportScope();
     const rows = buildMediaExportRows(scope.items);
@@ -2541,7 +2719,10 @@
       state.selected.add(item.selectionKey);
       state.selectionAnchor = item.selectionKey;
     });
-    if (changed) invalidateVisibleItems({ selection: true });
+    if (changed) {
+      invalidateVisibleItems({ selection: true });
+      persistThreadSelection();
+    }
     updateSelectionUi();
   }
 
@@ -3295,6 +3476,7 @@
     if (state.downloadState !== 'all') render();
     else updateDownloadUi();
     notify(p.label, 6000);
+    sendCompletionNotification('Gallery download finished', p.label);
   }
 
   let countsCache = null;
@@ -3329,6 +3511,23 @@
       (Number(TYPE_ORDER[a.type] ?? 9) - Number(TYPE_ORDER[b.type] ?? 9));
   }
 
+  function resolutionPixels(item) {
+    const width = Math.max(0, Number(item?.mediaDimensions?.width || 0));
+    const height = Math.max(0, Number(item?.mediaDimensions?.height || 0));
+    return width && height ? width * height : 0;
+  }
+
+  function resolutionBand(item) {
+    const width = Math.max(0, Number(item?.mediaDimensions?.width || 0));
+    const height = Math.max(0, Number(item?.mediaDimensions?.height || 0));
+    if (!width || !height) return 'unknown';
+    const shortEdge = Math.min(width, height);
+    if (shortEdge >= 2160) return 'uhd';
+    if (shortEdge >= 1080) return 'fhd';
+    if (shortEdge >= 720) return 'hd';
+    return 'sd';
+  }
+
   function visibleItems() {
     const cache = visibleItemsCache;
     if (cache
@@ -3336,6 +3535,7 @@
       && cache.selection === selectionRevision
       && cache.history === historyRevision
       && cache.downloadState === state.downloadState
+      && cache.resolutionFilter === state.resolutionFilter
       && cache.filter === state.filter
       && cache.query === state.query
       && cache.sort === state.sort
@@ -3356,12 +3556,15 @@
     // vanishing to one end, and thread order breaks every tie.
     else if (state.sort === 'date-asc') filtered.sort((a, b) => (Number(a.postedAt || 0) - Number(b.postedAt || 0)) || thread(a, b));
     else if (state.sort === 'date-desc') filtered.sort((a, b) => (Number(b.postedAt || 0) - Number(a.postedAt || 0)) || thread(a, b));
+    else if (state.sort === 'resolution-asc') filtered.sort((a, b) => resolutionPixels(a) - resolutionPixels(b) || thread(a, b));
+    else if (state.sort === 'resolution-desc') filtered.sort((a, b) => resolutionPixels(b) - resolutionPixels(a) || thread(a, b));
     else filtered.sort(thread);
     visibleItemsCache = {
       dataset: datasetRevision,
       selection: selectionRevision,
       history: historyRevision,
       downloadState: state.downloadState,
+      resolutionFilter: state.resolutionFilter,
       filter: state.filter,
       query: state.query,
       sort: state.sort,
@@ -3415,6 +3618,8 @@
       // the whole point of the filter is to find what still needs doing.
       download: state.downloadState === 'all'
         || (isMediaItem(item) && (state.downloadState === 'downloaded' ? wasDownloaded(item) : !wasDownloaded(item))),
+      resolution: !state.resolutionFilter || state.resolutionFilter === 'all'
+        || (isMediaItem(item) && resolutionBand(item) === state.resolutionFilter),
       query: !q || item.searchText.includes(q),
     };
   }
@@ -3424,7 +3629,8 @@
     const authorMatch = skip === 'author' || parts.author;
     const hostMatch = skip === 'host' || parts.host;
     const downloadMatch = skip === 'download' || parts.download;
-    return parts.type && authorMatch && hostMatch && parts.selected && downloadMatch && parts.query;
+    const resolutionMatch = skip === 'resolution' || parts.resolution;
+    return parts.type && authorMatch && hostMatch && parts.selected && downloadMatch && resolutionMatch && parts.query;
   }
 
   function replyDownloadableItems(key) {
@@ -3463,7 +3669,10 @@
         changed = true;
       }
     });
-    if (changed) invalidateVisibleItems({ selection: true });
+    if (changed) {
+      invalidateVisibleItems({ selection: true });
+      persistThreadSelection();
+    }
     return changed;
   }
 
@@ -3519,13 +3728,15 @@
       entries.forEach(entry => {
         if (!entry.isIntersecting) return;
         state.imageObserver.unobserve(entry.target);
-        const item = itemsByKey().get(entry.target.dataset.resolveKey);
+        const key = entry.target.dataset.resolveKey || entry.target.dataset.posterKey;
+        const item = itemsByKey().get(key);
         // Same caps for the non-virtualized layouts: the observer decides what
         // is near, the scheduler decides how much runs at once.
-        scheduleMediaReveal(item, entry.target);
+        if (entry.target.dataset.posterKey) scheduleEmbedPoster(item, entry.target);
+        else scheduleMediaReveal(item, entry.target);
       });
     }, { root: app.querySelector('.scg-scroll'), rootMargin: '700px 0px', threshold: 0.01 });
-    app.querySelectorAll('img[data-resolve-key]').forEach(img => state.imageObserver.observe(img));
+    app.querySelectorAll('img[data-resolve-key],img[data-poster-key]').forEach(img => state.imageObserver.observe(img));
   }
 
   function releaseRenderedMedia() {
@@ -3674,7 +3885,10 @@
     // The two routes cost the reader different things, so they are named apart:
     // one loads a stranger's player, the other streams the file itself.
     const detail = embedIsFramable(item) ? `Load ${sourceHost} player` : `Stream from ${sourceHost}`;
-    return `<button data-load-player="${key}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>${detail}</span></button>`;
+    const poster = state.embedPosters
+      ? `<img class="scg-embed-poster" data-poster-key="${key}" alt="" ${item.poster ? `src="${escapeHtml(item.poster)}"` : 'hidden'}>`
+      : '';
+    return `${poster}<button data-load-player="${key}">${iconWell('play', 'scg-icon-well-primary')}<b>Play video</b><span>${detail}</span></button>`;
   }
 
   function card(item) {
@@ -3695,10 +3909,10 @@
     const actions = `<div class="scg-actions"><button data-open="${key}">${iconWell('info')}<span>View</span></button><button data-download="${key}" class="scg-download-action">${iconWell('download', 'scg-icon-well-primary')}<span>${downloaded ? 'Download again' : (legacyDownload ? 'Download verified copy' : 'Download')}</span></button></div>`;
     if (item.type === 'image') {
       const displayUrl = item.resolution?.candidate?.url || item.url || item.thumb;
-      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" style="--scg-ratio:${itemRatio(item)}" data-key="${key}">${selection}${badge}<button class="scg-preview" data-open="${key}" title="View original image"><img loading="lazy" data-resolve-key="${key}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" tabindex="-1" style="--scg-ratio:${itemRatio(item)}" data-key="${key}">${selection}${badge}<button class="scg-preview" data-open="${key}" title="View original image"><img loading="lazy" data-resolve-key="${key}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
     }
     if (item.type === 'video' && VIDEO_EXT.test(item.url)) {
-      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" tabindex="-1" data-key="${key}">${selection}${badge}<video controls preload="none" poster="${escapeHtml(item.poster || '')}" src="${escapeHtml(item.url)}"></video>${actions}${meta}</article>`;
     }
     if (item.type === 'video' || item.type === 'embed') {
       if (playsInPlace(item)) {
@@ -3708,18 +3922,62 @@
         const player = state.activePlayers.has(item.selectionKey) && embedPlaybackIsLive(item)
           ? `<div class="scg-embed">${embedPlayerMarkup(item)}</div>`
           : `<div class="scg-embed scg-embed-placeholder">${embedPlaceholderMarkup(item)}</div>`;
-        return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}${player}${actions}${meta}</article>`;
+        return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" tabindex="-1" data-key="${key}">${selection}${badge}${player}${actions}${meta}</article>`;
       }
-      return `<article class="scg-card scg-linkcard ${isSelected ? 'selected' : ''} ${historyClass}" data-key="${key}">${selection}${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || 'Open video host')}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${actions}${meta}</article>`;
+      return `<article class="scg-card scg-linkcard ${isSelected ? 'selected' : ''} ${historyClass}" tabindex="-1" data-key="${key}">${selection}${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || 'Open video host')}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${actions}${meta}</article>`;
     }
     if (item.type === 'link') {
-      return `<article class="scg-card scg-linkcard" data-key="${key}">${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${meta}</article>`;
+      return `<article class="scg-card scg-linkcard" tabindex="-1" data-key="${key}">${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${meta}</article>`;
     }
     const expanded = state.expandedKeys.has(item.selectionKey);
     const expand = item.text.length > 360
       ? `<button class="scg-expand ${expanded ? 'expanded' : ''}" data-expand="${key}">${iconWell('chevron')}<span>${expanded ? 'Show less' : 'Show more'}</span></button>`
       : '';
-    return `<article class="scg-card scg-textcard" data-key="${key}">${badge}<p class="${expanded ? 'expanded' : ''}">${escapeHtml(item.text)}</p>${expand}${meta}</article>`;
+    return `<article class="scg-card scg-textcard" tabindex="-1" data-key="${key}">${badge}<p class="${expanded ? 'expanded' : ''}">${escapeHtml(item.text)}</p>${expand}${meta}</article>`;
+  }
+
+  function gridNavigationTarget(keys, currentKey, direction, columns = 1) {
+    if (!keys.length) return '';
+    const found = keys.indexOf(currentKey);
+    if (found < 0) return keys[0];
+    const current = found;
+    const stride = Math.max(1, Number(columns) || 1);
+    const delta = direction === 'left' ? -1 : direction === 'right' ? 1 : direction === 'up' ? -stride : stride;
+    return keys[Math.min(keys.length - 1, Math.max(0, current + delta))] || keys[0];
+  }
+
+  function gridColumnCount() {
+    if (flow.model?.columns) return flow.model.columns;
+    const grid = document.querySelector(`#${APP_ID} .scg-grid`);
+    const first = grid?.querySelector('.scg-card[data-key]');
+    return first?.offsetWidth ? Math.max(1, Math.round(grid.clientWidth / first.offsetWidth)) : 1;
+  }
+
+  function focusGridItem(key) {
+    if (!key) return false;
+    state.gridFocusKey = key;
+    const grid = document.querySelector(`#${APP_ID} .scg-grid`);
+    const findNode = () => [...(grid?.querySelectorAll('.scg-card[data-key]') || [])].find(node => node.dataset.key === key);
+    let node = findNode();
+    if (node) {
+      node.focus({ preventScroll: true });
+      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      return true;
+    }
+    const cell = flow.model?.byKey.get(key);
+    const scroll = flowScrollArea();
+    if (!cell || !scroll) return false;
+    scroll.scrollTop = Math.max(0, cell.y - 80);
+    updateFlowWindow();
+    requestAnimationFrame(() => {
+      node = findNode();
+      node?.focus({ preventScroll: true });
+    });
+    return true;
+  }
+
+  function rectanglesIntersect(a, b) {
+    return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
   }
 
   function setSelectOptions(select, options, selectedValue) {
@@ -3787,6 +4045,9 @@
     if (view.downloadState && view.downloadState !== 'all') {
       chips.push({ facet: 'download', label: 'Downloads', value: DOWNLOAD_STATE_LABELS[view.downloadState] || view.downloadState });
     }
+    if (view.resolutionFilter && view.resolutionFilter !== 'all') {
+      chips.push({ facet: 'resolution', label: 'Resolution', value: RESOLUTION_LABELS[view.resolutionFilter] || view.resolutionFilter });
+    }
     if (view.selectedOnly) chips.push({ facet: 'selected', label: 'Showing', value: 'Selected only' });
     return chips;
   }
@@ -3798,7 +4059,8 @@
     if (facet === 'host') return { hostFilter: 'all' };
     if (facet === 'selected') return { selectedOnly: false };
     if (facet === 'download') return { downloadState: 'all' };
-    if (facet === 'all') return { filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all' };
+    if (facet === 'resolution') return { resolutionFilter: 'all' };
+    if (facet === 'all') return { filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all', resolutionFilter: 'all' };
     return null;
   }
 
@@ -3815,7 +4077,7 @@
   function facetCounts() {
     const signature = [
       datasetRevision, selectionRevision, historyRevision, state.filter, state.query,
-      state.authorFilter, state.hostFilter, state.selectedOnly, state.downloadState,
+      state.authorFilter, state.hostFilter, state.selectedOnly, state.downloadState, state.resolutionFilter,
     ].join('\u0000');
     if (facetCountCache && facetCountCache.signature === signature) return facetCountCache;
     const q = normalizedQuery();
@@ -3825,7 +4087,7 @@
       // One evaluation, both answers: the shared facets decide whether the item
       // counts at all, then each list ignores only its own.
       const parts = filterParts(item, q);
-      if (!parts.type || !parts.selected || !parts.download || !parts.query) return;
+      if (!parts.type || !parts.selected || !parts.download || !parts.resolution || !parts.query) return;
       if (item.author && parts.host) authors.set(item.author, (authors.get(item.author) || 0) + 1);
       if (parts.author) {
         const host = itemSourceHost(item);
@@ -3876,6 +4138,11 @@
     state.sourcePage = Number(setSelectOptions(app.querySelector('[data-source-page]'), pageOptions, state.sourcePage) || 1);
     const sourceSelect = app.querySelector('[data-source-page]');
     if (sourceSelect) sourceSelect.disabled = state.scanning;
+    app.querySelectorAll('[data-scan-range]').forEach((input, index) => {
+      input.max = String(state.threadPageCount);
+      if (!input.value) input.value = index ? String(state.threadPageCount) : '1';
+      input.disabled = state.scanning;
+    });
   }
 
   function replyGroupsMarkup(items) {
@@ -3977,7 +4244,7 @@
     const model = flow.model;
     const scrollArea = flowScrollArea();
     if (!model || !scrollArea) return 0;
-    const cell = model.byKey.get(key);
+    const cell = model.byKey.get(String(key).replace(/^poster:/, ''));
     if (!cell) return Number.MAX_SAFE_INTEGER;
     const centre = scrollArea.scrollTop + (scrollArea.clientHeight / 2);
     return Math.abs((cell.y + (cell.height / 2)) - centre);
@@ -4009,7 +4276,8 @@
     // card scrolled away is banked rather than wasted. No failure bookkeeping
     // is added here: resolution.failedAt drives a cooldown that the download
     // path also reads, and a display failure must not poison a download.
-    resolveForDisplay(entry.item).then(result => {
+    const work = entry.kind === 'poster' ? resolveEmbedPoster(entry.item) : resolveForDisplay(entry.item);
+    work.then(result => {
       mediaScheduler.resolving -= 1;
       if (entry.cancelled || !result || !result.url) return finishScheduled(entry);
       entry.url = result.url;
@@ -4039,6 +4307,8 @@
     const reveal = () => {
       if (!entry.cancelled && entry.img.isConnected && entry.img.src !== entry.url) {
         entry.img.src = entry.url;
+        entry.img.hidden = false;
+        if (entry.kind === 'poster') entry.item.poster = entry.url;
       }
       done();
     };
@@ -4079,12 +4349,40 @@
     pumpMediaScheduler();
   }
 
+  async function resolveEmbedPoster(item) {
+    if (item?.poster) return { url: item.poster };
+    const page = normalizeSourceUrl(item?.originalLink || item?.url || '');
+    if (!page) return { url: '' };
+    try {
+      const poster = mediaFromHtml(await requestText(page, { headers: { Accept: 'text/html,*/*', Referer: item.postUrl || location.href } }), page, 'image');
+      return { url: poster || '' };
+    } catch (error) {
+      recordDiagnostic('resolverFailures', 'Embed poster', error, item);
+      return { url: '' };
+    }
+  }
+
+  function scheduleEmbedPoster(item, img) {
+    if (!state.embedPosters || !item || !img || !['video', 'embed'].includes(item.type) || !item.selectionKey) return;
+    const key = `poster:${item.selectionKey}`;
+    const existing = mediaScheduler.queue.get(key);
+    if (existing) {
+      existing.img = img;
+      existing.cancelled = false;
+      return;
+    }
+    mediaScheduler.queue.set(key, { key, kind: 'poster', item, img, phase: 'pending', cancelled: false, url: '' });
+    pumpMediaScheduler();
+  }
+
   function cancelMediaReveal(key) {
-    const entry = mediaScheduler.queue.get(key);
-    if (!entry) return;
-    entry.cancelled = true;
-    // In-flight work is left to settle; only the DOM swap is suppressed.
-    if (entry.phase === 'pending') mediaScheduler.queue.delete(key);
+    [key, `poster:${key}`].forEach(queueKey => {
+      const entry = mediaScheduler.queue.get(queueKey);
+      if (!entry) return;
+      entry.cancelled = true;
+      // In-flight work is left to settle; only the DOM swap is suppressed.
+      if (entry.phase === 'pending') mediaScheduler.queue.delete(queueKey);
+    });
   }
 
   function cancelAllMediaReveals() {
@@ -4235,6 +4533,8 @@
       const img = node.querySelector('img[data-resolve-key]');
       if (img) scheduleMediaReveal(item, img);
     }
+    const poster = node.querySelector('img[data-poster-key]');
+    if (poster) scheduleEmbedPoster(item, poster);
     // Scrolling a playing card out of the window and back should not rewind it.
     resumePlaybackPosition(node.querySelector('video'), item);
   }
@@ -4407,7 +4707,7 @@
     app.classList.toggle('scanning', state.scanning);
     app.classList.toggle('grouped-replies', state.groupBy === 'reply');
     applyShellState();
-    app.querySelectorAll('[data-filter], [data-search], [data-card-scale], .scg-refinebar button, .scg-refinebar select, .scg-viewbar button, .scg-viewbar select, [data-action="selection-mode"], [data-action="page"], [data-action="load-source-page"]').forEach(control => {
+    app.querySelectorAll('[data-filter], [data-search], [data-card-scale], .scg-refinebar button, .scg-refinebar select, .scg-viewbar button, .scg-viewbar select, [data-action="selection-mode"], [data-action="page"], [data-action="load-source-page"], [data-action="scan-new"], [data-action="scan-range"], [data-scan-range]').forEach(control => {
       control.disabled = state.scanning;
     });
     app.querySelectorAll('[data-filter]').forEach(btn => {
@@ -4468,6 +4768,7 @@
     app.querySelector('[data-sort]').value = state.sort;
     app.querySelector('[data-group-by]').value = state.groupBy;
     app.querySelector('[data-download-state]').value = state.downloadState;
+    app.querySelector('[data-resolution-filter]').value = state.resolutionFilter;
     updateViewPager(matched.length);
     updateSelectionUi();
     updateDownloadUi();
@@ -4498,6 +4799,8 @@
     const dimensions = normalizeMediaDimensions(width, height);
     if (!box || !item || !dimensions) return false;
     item.mediaDimensions = { ...dimensions, qualifier, mediaUrl: absoluteUrl(mediaUrl), detectedAt: Date.now() };
+    visibleItemsCache = null;
+    facetCountCache = null;
     applyMeasuredRatio(item, dimensions.width, dimensions.height, qualifier ? 'thumb' : 'measured');
     const value = mediaResolutionText(dimensions, qualifier);
     box.querySelectorAll('[data-viewer-resolution]').forEach(node => {
@@ -4729,10 +5032,14 @@
     returnFocus?.focus?.({ preventScroll: true });
     // The card behind the viewer is still mounted holding its own stale
     // position. Line it up with what was actually watched.
-    if (!watched || !watched.selectionKey) return;
-    document.querySelectorAll(`#${APP_ID} .scg-card[data-key] video`).forEach(video => {
-      if (video.closest('.scg-card')?.dataset.key === watched.selectionKey) resumePlaybackPosition(video, watched);
-    });
+    if (watched?.selectionKey) {
+      document.querySelectorAll(`#${APP_ID} .scg-card[data-key] video`).forEach(video => {
+        if (video.closest('.scg-card')?.dataset.key === watched.selectionKey) resumePlaybackPosition(video, watched);
+      });
+    }
+    // Resolution is learned in the viewer. If it participates in the current
+    // view, close is the first safe point to re-filter/re-sort the grid.
+    if ((state.resolutionFilter && state.resolutionFilter !== 'all') || state.sort.startsWith('resolution-')) render();
   }
 
   async function renderLightbox() {
@@ -4975,7 +5282,7 @@
     return Boolean(result?.confirmed);
   }
 
-  async function scanThread() {
+  async function scanThread(requested = {}) {
     if (state.downloading) return notify('Finish or cancel the ZIP queue before scanning another page.');
     if (state.scanning) {
       state.cancelScan = true;
@@ -4984,10 +5291,15 @@
       updateScanStatus();
       return;
     }
+    const options = requested && typeof requested === 'object' && !('currentTarget' in requested) ? requested : {};
     updateThreadPageInfo(document, location.href);
     const detectedPages = Math.max(1, state.threadPageCount);
-    if (state.warnLargeThreadScan && detectedPages >= LARGE_THREAD_WARNING_PAGES) {
-      if (!await confirmLargeThreadScan(detectedPages)) return;
+    const startPage = Math.min(detectedPages, Math.max(1, Number(options.start) || 1));
+    const requestedEnd = Math.min(detectedPages, Math.max(startPage, Number(options.end) || detectedPages));
+    const endPage = Math.min(requestedEnd, startPage + 249);
+    const pagesToScan = endPage - startPage + 1;
+    if (state.warnLargeThreadScan && pagesToScan >= LARGE_THREAD_WARNING_PAGES) {
+      if (!await confirmLargeThreadScan(pagesToScan)) return;
     }
     state.scanning = true;
     state.cancelScan = false;
@@ -4995,17 +5307,21 @@
     state.scannedPages = 0;
     state.scanCurrentPage = 0;
     state.scanFailedPages = 0;
-    state.scanTotalPages = Math.min(detectedPages, 250);
-    state.items = [];
-    resetDatasetState();
-    state.sourceLabel = 'Entire thread';
+    state.scanTotalPages = pagesToScan;
+    if (!options.append) {
+      state.items = [];
+      resetDatasetState();
+    }
+    state.sourceLabel = options.label || (startPage === 1 && endPage === detectedPages
+      ? 'Entire thread'
+      : `Thread pages ${startPage}-${endPage}`);
     render();
 
-    const seenItems = new Set();
+    const seenItems = new Set(state.items.map(itemDedupeKey));
     const controller = new AbortController();
     state.scanController = controller;
     try {
-      for (let page = 1; page <= state.scanTotalPages && !state.cancelScan; page++) {
+      for (let page = startPage; page <= endPage && !state.cancelScan; page++) {
         state.scanCurrentPage = page;
         updateScanStatus();
         const pageUrl = threadPageUrl(page);
@@ -5025,6 +5341,7 @@
           appendUniqueItems(state.items, extractFromDocument(doc, pageUrl), seenItems);
           invalidateVisibleItems({ dataset: true });
           state.scannedPages++;
+          rememberScannedPage(page, pageUrl);
         } catch (error) {
           if (error?.name === 'AbortError' || state.cancelScan) break;
           state.scanFailedPages++;
@@ -5033,10 +5350,10 @@
           doc = null;
         }
         updateScanStatus();
-        if (page < state.scanTotalPages && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
+        if (page < endPage && !state.cancelScan) await new Promise(resolve => setTimeout(resolve, 250));
       }
-      if (detectedPages > 250 && !state.cancelScan) {
-        state.sourceLabel = 'Partial thread scan (250-page safety limit)';
+      if (requestedEnd > endPage && !state.cancelScan) {
+        state.sourceLabel = `Partial thread scan (${startPage}-${endPage}, 250-page safety limit)`;
         notify('Stopped at the 250-page safety limit. Use the page picker for later pages.', 6500);
       } else if (state.scanFailedPages) {
         state.sourceLabel = `Thread scan (${state.scanFailedPages} failed page${state.scanFailedPages === 1 ? '' : 's'})`;
@@ -5055,17 +5372,36 @@
       state.scanCanceling = false;
       state.cancelScan = false;
       render();
+      if (pagesToScan > 1) sendCompletionNotification('Gallery scan finished', `${state.sourceLabel}: ${state.items.length} items indexed.`);
     }
+  }
+
+  async function scanNewPages() {
+    updateThreadPageInfo(document, location.href);
+    const last = highestScannedPage();
+    const detected = Math.max(1, state.threadPageCount);
+    if (last >= detected) return notify(`No pages newer than page ${last || 1} were detected.`, 4500);
+    const start = Math.max(1, last + 1);
+    return scanThread({ start, end: detected, append: true, label: `New pages ${start}-${detected}` });
+  }
+
+  async function scanPageRange(start, end) {
+    const from = Math.max(1, Number(start) || 1);
+    const to = Math.max(1, Number(end) || from);
+    const first = Math.min(from, to);
+    const last = Math.max(from, to);
+    return scanThread({ start: first, end: last, append: false, label: `Thread pages ${first}-${last}` });
   }
 
   function scanCurrentPage() {
     if (state.downloading) return notify('Finish or cancel the ZIP queue before scanning another page.');
     updateThreadPageInfo(document, location.href);
-    state.items = dedupe(extractFromDocument(document, location.href));
     resetDatasetState();
+    state.items = dedupe(extractFromDocument(document, location.href));
     state.sourcePage = pageNumberFromUrl(location.href);
     state.sourceLabel = `Thread page ${state.sourcePage}`;
     state.scannedPages = 1;
+    rememberScannedPage(state.sourcePage, location.href);
     render();
   }
 
@@ -5092,6 +5428,7 @@
       updateThreadPageInfo(doc, targetUrl);
       state.items = dedupe(extractFromDocument(doc, targetUrl));
       state.scannedPages = 1;
+      rememberScannedPage(targetPage, targetUrl);
     } catch (error) {
       console.error('[SimpCity Gallery]', error);
       recordDiagnostic('scanFailures', `Page ${targetPage} scan`, error);
@@ -5497,6 +5834,10 @@
     #${APP_ID} .scg-source-page{display:flex;align-items:center;gap:4px;padding:0 2px;border-left:1px solid var(--scg-line);border-right:1px solid var(--scg-line)}
     #${APP_ID} .scg-source-page select{min-height:32px;min-width:96px;border-color:transparent;background-color:transparent}
     #${APP_ID} .scg-source-page select:hover:not(:disabled){background-color:var(--scg-surface-3)}
+    #${APP_ID} .scg-source-range{display:flex;align-items:center;gap:3px;padding-left:2px;border-left:1px solid var(--scg-line)}
+    #${APP_ID} .scg-source-range input{width:44px;min-height:30px;padding:3px 5px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--scg-text);text-align:center;font:inherit}
+    #${APP_ID} .scg-source-range input:hover:not(:disabled),#${APP_ID} .scg-source-range input:focus{border-color:var(--scg-line-strong);background:var(--scg-surface-3)}
+    #${APP_ID} .scg-source-range>span{color:var(--scg-muted)}
 
     /* ---- 7. Header utilities + overflow menu ------------------- */
     #${APP_ID} .scg-header-actions{display:flex;align-items:center;gap:3px;flex:none}
@@ -6048,6 +6389,11 @@
 
     #${APP_ID} .scg-embed{position:relative;width:100%;aspect-ratio:16/9;background:var(--scg-well)}
     #${APP_ID} .scg-embed iframe{display:block;width:100%;height:100%;border:0}
+    #${APP_ID}.safe-mode .scg-card img,
+    #${APP_ID}.safe-mode .scg-card video,
+    #${APP_ID}.safe-mode .scg-card iframe{filter:blur(24px);transform:scale(1.06)}
+    #${APP_ID}.safe-mode .scg-card{overflow:hidden}
+    #${APP_ID} .scg-marquee{position:fixed;z-index:90;pointer-events:none;border:1px solid var(--scg-accent);border-radius:6px;background:color-mix(in srgb,var(--scg-accent) 16%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--scg-accent) 20%,transparent)}
     #${APP_ID} .scg-embed-unavailable{
       display:grid;place-items:center;gap:9px;width:100%;height:100%;min-height:160px;
       padding:18px;text-align:center;
@@ -6077,7 +6423,10 @@
       display:grid;place-items:center;min-height:160px;
       background:radial-gradient(circle at 50% 6%,var(--scg-surface-3),var(--scg-well) 72%);
     }
+    #${APP_ID} .scg-embed-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.52}
+    #${APP_ID} .scg-embed-poster[hidden]{display:none}
     #${APP_ID} .scg-embed-placeholder button{
+      position:relative;z-index:1;
       display:flex;flex-direction:column;align-items:center;gap:7px;
       padding:15px 22px;
       border:1px solid var(--scg-line-strong);border-radius:var(--scg-r-lg);
@@ -6933,11 +7282,13 @@
       #${APP_ID} .scg-thread-context [data-source-summary]{display:none}
       #${APP_ID} .scg-controls{flex-wrap:wrap}
       #${APP_ID} .scg-search{flex-basis:100%}
-      #${APP_ID} .scg-scan-actions{width:100%;justify-content:space-between}
+      #${APP_ID} .scg-scan-actions{width:100%;justify-content:space-between;flex-wrap:wrap}
       #${APP_ID} .scg-scan-actions button{flex:1;min-width:0;padding:6px 8px}
       #${APP_ID} .scg-scan-actions [data-action="page"]>span{display:none}
-      #${APP_ID} .scg-source-page{flex:1;min-width:0}
+      #${APP_ID} .scg-source-page{flex:1 1 120px;min-width:0}
       #${APP_ID} .scg-source-page select{min-width:0;width:100%}
+      #${APP_ID} .scg-source-range{flex:1 1 170px;min-width:0}
+      #${APP_ID} .scg-source-range input{flex:1;min-width:0}
       #${APP_ID} .scg-filter-panel{padding:0 8px 8px}
       #${APP_ID} .scg-active-facets{padding:0 8px 8px;flex-wrap:nowrap;overflow-x:auto}
       #${APP_ID} .scg-facet-chip{flex:none;max-width:56vw}
@@ -7107,6 +7458,8 @@
           <div class="scg-scan-actions" role="group" aria-label="Scan sources">
             <button data-action="page" data-tooltip="Index the page you are on">${iconWell('page')}<span>This page</span></button>
             <span class="scg-source-page"><select data-source-page aria-label="Thread page to load"></select><button data-action="load-source-page" data-tooltip="Load the selected thread page" aria-label="Load the selected thread page">${iconWell('download')}</button></span>
+            <span class="scg-source-range"><input data-scan-range="start" type="number" min="1" value="1" aria-label="First thread page"><span>–</span><input data-scan-range="end" type="number" min="1" value="1" aria-label="Last thread page"><button data-action="scan-range" data-tooltip="Scan this page range" aria-label="Scan selected page range">${iconWell('scan')}</button></span>
+            <button data-action="scan-new" data-tooltip="Scan only pages newer than the last successful scan">${iconWell('download')}<span>New pages</span></button>
             <button class="scg-scan-thread-danger scg-tip-end" data-action="thread" data-tooltip="${escapeHtml(SCAN_WARNING_TEXT)}" aria-describedby="scg-tl-thread-scan-warning">${iconWell('scan')}<span>Scan thread</span></button>
           </div>
           <span class="scg-scan-warning" id="scg-tl-thread-scan-warning" role="note">${escapeHtml(SCAN_WARNING_TEXT)}</span>
@@ -7121,11 +7474,13 @@
               <div class="scg-menu-label" role="presentation">Appearance</div>
               <button data-action="theme" role="menuitem">${iconWell('palette')}<span>Theme</span></button>
               <button data-action="density" role="menuitem">${iconWell('layout')}<span>Compact cards</span></button>
+              <button data-action="safe-mode" role="menuitem">${iconWell('image')}<span>Blur media</span></button>
               <div class="scg-menu-sep" role="separator"></div>
               <div class="scg-menu-label" role="presentation">Export media list</div>
               <button data-action="copy-urls" role="menuitem">${iconWell('copy')}<span>Copy URLs</span></button>
               <button data-action="export-urls-txt" role="menuitem">${iconWell('download')}<span>Save URL list (.txt)</span></button>
               <button data-action="export-urls-json" role="menuitem">${iconWell('download')}<span>Save URL list (.json)</span></button>
+              <button data-action="export-yt-dlp-archive" role="menuitem">${iconWell('download')}<span>Save yt-dlp archive</span></button>
               <div class="scg-menu-sep" role="separator"></div>
               <div class="scg-menu-label" role="presentation">Help</div>
               <button data-action="shortcuts" role="menuitem">${iconWell('keyboard')}<span>Keyboard shortcuts</span></button>
@@ -7157,6 +7512,7 @@
                 <label>Sort <select data-sort>${Object.entries(SORT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></label>
                 <label>Group <select data-group-by><option value="none">Individual cards</option><option value="reply">Group by reply</option></select></label>
                 <label>Downloads <select data-download-state>${DOWNLOAD_STATES.map(value => `<option value="${value}">${escapeHtml(DOWNLOAD_STATE_LABELS[value])}</option>`).join('')}</select></label>
+                <label>Resolution <select data-resolution-filter>${RESOLUTION_FILTERS.map(value => `<option value="${value}">${escapeHtml(RESOLUTION_LABELS[value])}</option>`).join('')}</select></label>
                 <label>Author <select data-author-filter></select></label>
                 <label>Host <select data-host-filter></select></label>
                 <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${viewPageSizeLabel(size)}</option>`).join('')}</select></label>
@@ -7184,6 +7540,7 @@
           <div class="scg-menu scg-menu-up" id="scg-tl-select-menu" role="menu" aria-label="Bulk selection">
             <div class="scg-menu-label" role="presentation">Select</div>
             <button data-action="select-visible" role="menuitem">${iconWell('select')}<span>Everything in this view (A)</span></button>
+            <button data-action="select-matching" role="menuitem">${iconWell('filter')}<span>All matching current filters</span></button>
             <button data-action="select-images" role="menuitem">${iconWell('image')}<span>All indexed images</span></button>
             <button data-action="select-videos" role="menuitem">${iconWell('video')}<span>All indexed videos</span></button>
             <div class="scg-menu-sep" role="separator"></div>
@@ -7214,9 +7571,9 @@
           <div class="scg-settings-search">${icon('search')}<input type="search" data-settings-search placeholder="Search settings" aria-label="Search settings" aria-describedby="scg-tl-settings-empty"><button type="button" data-action="clear-settings-search" aria-label="Clear the settings search">${icon('close')}</button></div>
           <p class="scg-settings-empty" id="scg-tl-settings-empty" data-settings-empty role="status" hidden>No settings match that search.</p>
           <div class="scg-settings-grid">
-          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Masonry renders only what is on screen, which is what makes it suitable for very large threads. The uniform grid and grouping by reply use the paged renderer instead, so Per view applies again.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('palette')} Appearance</h3><p>Choose the gallery layout, theme, card density and remembered filter state. Masonry renders only what is on screen, which is what makes it suitable for very large threads. The uniform grid and grouping by reply use the paged renderer instead, so Per view applies again.</p><div class="scg-setting-fields"><label>Gallery layout<select data-setting-layout>${layoutOptionsMarkup()}</select></label><label>Theme<select data-setting-theme><option value="dark">Darkroom (dark)</option><option value="light">Daylight (light)</option></select></label><label>Accent<select data-setting-accent><option value="blue">Blue</option><option value="indigo">Indigo</option><option value="amber">Amber</option><option value="green">Green</option><option value="rose">Rose</option><option value="neutral">Neutral</option></select></label><label>Card density<select data-setting-density><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label><label class="scg-setting-size">Media card size <span><input data-card-scale type="range" min="70" max="160" step="5" value="100" aria-label="Image and video card size in masonry and grid layouts"><output data-card-scale-value>100%</output></span></label></div><label class="scg-settings-check"><input type="checkbox" data-setting-filters-collapsed><span>Keep filters collapsed</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-safe-mode><span>Blur media previews until safe mode is turned off</span></label></section>
           <section class="scg-settings-card full"><h3>${icon('archive')} Archive and downloads <span class="scg-settings-version">v${APP_VERSION}</span></h3><p>Control download throughput, ZIP part limits and archive organization. Changes apply to the next queue.</p><div class="scg-setting-fields scg-download-settings"><label>ZIP folders<select data-setting-archive-layout><option value="page-author">Page / author</option><option value="page">Page only</option><option value="reply">Page / reply</option><option value="flat">Flat archive</option></select></label><label>Simultaneous files<select data-setting-download-concurrency><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label><label>Maximum part size<select data-setting-zip-part-size><option value="100">100 MB</option><option value="300">300 MB</option><option value="600">600 MB</option><option value="1000">1,000 MB</option></select></label><label>Files per part<select data-setting-zip-part-files><option value="24">24</option><option value="50">50</option><option value="100">100</option></select></label></div><div class="scg-archive-checks"><label class="scg-settings-check"><input type="checkbox" data-setting-include-manifest><span>Add manifest.csv with source URL, reply, author, validation method and CRC32.</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-dedupe-content><span>Merge byte-identical reposts using verified size + CRC32 while preserving download history and provenance.</span></label></div></section>
-          <section class="scg-settings-card"><h3>${icon('scan')} Scan safety</h3><p>Large full-thread scans index HTML from every detected page and can use substantial memory.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning threads with ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label></section>
+          <section class="scg-settings-card"><h3>${icon('scan')} Scan and background work</h3><p>Large scans index HTML from every requested page and can use substantial memory. Optional embed posters cost one lazy request per visible host card.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-embed-posters><span>Fetch embed poster images lazily</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-completion-notifications><span>Desktop notification when a long scan or ZIP queue finishes</span></label></section>
           <section class="scg-settings-card"><h3>${icon('keyboard')} Keyboard shortcuts</h3><p>Click a chord and press the keys you want. Escape cancels a recording. Shortcuts never fire while you are typing in a field, and the media viewer's own keys are fixed.</p><div class="scg-shortcut-rows">${SHORTCUT_ACTIONS.map(action => `<div class="scg-shortcut-row"><span>${escapeHtml(action.label)}</span><button type="button" class="scg-shortcut-key" data-shortcut="${action.id}" aria-label="Change the shortcut for ${escapeHtml(action.label)}"></button></div>`).join('')}</div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="reset-shortcuts">${iconWell('reset')}<span>Restore defaults</span></button></div></section>
           <section class="scg-settings-card"><h3>${icon('filter')} Ignore list</h3><p>Media whose URL contains any of these fragments is never indexed, so it costs no card and no memory. One fragment per line or separated by commas. Editing this drops anything already indexed that matches.</p><textarea class="scg-block-patterns" data-setting-block-patterns rows="4" spellcheck="false" placeholder="signature.example.com&#10;/avatars/&#10;banner-"></textarea><div class="scg-block-summary" data-block-summary role="status"></div></section>
           <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
@@ -7267,7 +7624,7 @@
   }
 
   const controllers = Object.freeze({
-    scanner: Object.freeze({ current: scanCurrentPage, page: scanSpecificPage, thread: scanThread }),
+    scanner: Object.freeze({ current: scanCurrentPage, page: scanSpecificPage, thread: scanThread, newPages: scanNewPages, range: scanPageRange }),
     gallery: Object.freeze({ open: openApp, close: closeApp, render }),
     viewer: Object.freeze({ open: openLightbox, close: closeLightbox, navigate: navigateLightbox }),
     downloads: Object.freeze({ one: downloadMedia, bulk: bulkDownload }),
@@ -7287,13 +7644,21 @@
   };
   app.querySelector('[data-action="page"]').onclick = () => state.scanning ? notify('Cancel the current scan first.') : controllers.scanner.current();
   app.querySelector('[data-action="load-source-page"]').onclick = () => controllers.scanner.page(app.querySelector('[data-source-page]').value);
-  app.querySelector('[data-action="thread"]').onclick = controllers.scanner.thread;
+  app.querySelector('[data-action="scan-new"]').onclick = () => controllers.scanner.newPages();
+  app.querySelector('[data-action="scan-range"]').onclick = () => controllers.scanner.range(
+    app.querySelector('[data-scan-range="start"]').value,
+    app.querySelector('[data-scan-range="end"]').value,
+  );
+  app.querySelector('[data-action="thread"]').onclick = () => controllers.scanner.thread();
   app.querySelector('[data-sort]').onchange = event => commitState({ sort: event.target.value, viewPage: 1 }, { persist: true });
   app.querySelector('[data-author-filter]').onchange = event => commitState({ authorFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-host-filter]').onchange = event => commitState({ hostFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-group-by]').onchange = event => commitState({ groupBy: event.target.value, viewPage: 1 }, { persist: true });
   app.querySelector('[data-download-state]').onchange = event => {
     commitState({ downloadState: DOWNLOAD_STATES.includes(event.target.value) ? event.target.value : 'all', viewPage: 1 }, { persist: true });
+  };
+  app.querySelector('[data-resolution-filter]').onchange = event => {
+    commitState({ resolutionFilter: RESOLUTION_FILTERS.includes(event.target.value) ? event.target.value : 'all', viewPage: 1 }, { persist: true });
   };
   app.querySelector('[data-selected-only]').onclick = () => commitState({ selectedOnly: !state.selectedOnly, viewPage: 1 });
   app.querySelector('[data-action="collapse-all"]').onclick = () => {
@@ -7316,7 +7681,7 @@
     app.querySelector('[data-search]').value = '';
     commitState({
       filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
-      downloadState: 'all', sort: 'thread-asc', groupBy: 'none', viewPage: 1,
+      downloadState: 'all', resolutionFilter: 'all', sort: 'thread-asc', groupBy: 'none', viewPage: 1,
     }, { persist: true });
   };
   app.querySelector('[data-action="filters-toggle"]').onclick = () => {
@@ -7328,6 +7693,10 @@
   app.querySelector('[data-action="theme"]').onclick = () => {
     const current = Math.max(0, THEME_MODES.indexOf(state.theme));
     commitState({ theme: THEME_MODES[(current + 1) % THEME_MODES.length] }, { persist: true, shellOnly: true });
+  };
+  app.querySelector('[data-action="safe-mode"]').onclick = () => {
+    closeDisclosures();
+    commitState({ safeMode: !state.safeMode }, { persist: true, shellOnly: true });
   };
   const overflowTrigger = app.querySelector('[data-action="overflow"]');
   const overflowMenu = app.querySelector('.scg-menu');
@@ -7357,6 +7726,7 @@
   app.querySelector('[data-action="copy-urls"]').onclick = () => { closeDisclosures(); copyMediaUrls(); };
   app.querySelector('[data-action="export-urls-txt"]').onclick = () => { closeDisclosures(); exportMediaUrls('txt'); };
   app.querySelector('[data-action="export-urls-json"]').onclick = () => { closeDisclosures(); exportMediaUrls('json'); };
+  app.querySelector('[data-action="export-yt-dlp-archive"]').onclick = () => { closeDisclosures(); exportYtDlpArchive(); };
   app.querySelector('[data-action="settings"]').onclick = () => {
     closeDisclosures();
     controllers.settings.open();
@@ -7400,6 +7770,15 @@
   };
   app.querySelector('[data-setting-warn-large-scan]').onchange = event => {
     commitState({ warnLargeThreadScan: event.target.checked }, { persist: true, shellOnly: true });
+  };
+  app.querySelector('[data-setting-embed-posters]').onchange = event => {
+    commitState({ embedPosters: event.target.checked }, { persist: true });
+  };
+  app.querySelector('[data-setting-completion-notifications]').onchange = async event => {
+    event.target.checked = await setCompletionNotifications(event.target.checked);
+  };
+  app.querySelector('[data-setting-safe-mode]').onchange = event => {
+    commitState({ safeMode: event.target.checked }, { persist: true, shellOnly: true });
   };
   app.querySelector('.scg-settings-panel').onclick = event => {
     if (event.target.classList.contains('scg-settings-panel')) controllers.settings.close();
@@ -7448,6 +7827,10 @@
     if (state.selectedOnly) render();
   };
   app.querySelector('[data-action="select-visible"]').onclick = () => bulkSelect(mediaItems());
+  app.querySelector('[data-action="select-matching"]').onclick = () => {
+    closeDisclosures();
+    selectItems(visibleItems().filter(isMediaItem));
+  };
   app.querySelector('[data-action="select-images"]').onclick = () => bulkSelect(state.items.filter(item => item.type === 'image'));
   app.querySelector('[data-action="select-videos"]').onclick = () => bulkSelect(state.items.filter(item => item.type === 'video' || item.type === 'embed'));
   app.querySelectorAll('[data-action="clear-selection"]').forEach(button => {
@@ -7524,7 +7907,51 @@
     topButton.classList.toggle('visible', scrollArea.scrollTop > 650);
     scheduleFlowWindow();
   }, { passive: true });
-  app.querySelector('.scg-grid').onclick = event => {
+  const gridNode = app.querySelector('.scg-grid');
+  gridNode.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || event.target !== gridNode || state.scanning) return;
+    const start = { x: event.clientX, y: event.clientY };
+    const marquee = document.createElement('div');
+    marquee.className = 'scg-marquee';
+    app.appendChild(marquee);
+    let moved = false;
+    const move = pointer => {
+      const left = Math.min(start.x, pointer.clientX);
+      const top = Math.min(start.y, pointer.clientY);
+      const width = Math.abs(pointer.clientX - start.x);
+      const height = Math.abs(pointer.clientY - start.y);
+      moved ||= width > 5 || height > 5;
+      Object.assign(marquee.style, { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+    };
+    const finish = pointer => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', cancel);
+      move(pointer);
+      if (moved) {
+        const selectionRect = marquee.getBoundingClientRect();
+        const items = [...gridNode.querySelectorAll('.scg-card[data-key]')]
+          .filter(node => rectanglesIntersect(selectionRect, node.getBoundingClientRect()))
+          .map(node => itemForNode(node, 'key'))
+          .filter(Boolean);
+        selectItems(items, !pointer.ctrlKey && !pointer.metaKey);
+      }
+      marquee.remove();
+    };
+    const cancel = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', cancel);
+      marquee.remove();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', cancel);
+    event.preventDefault();
+  });
+  gridNode.onclick = event => {
+    const cardNode = event.target.closest?.('.scg-card[data-key]');
+    if (cardNode) state.gridFocusKey = cardNode.dataset.key;
     const replySelect = event.target.closest('[data-reply-select]');
     if (replySelect) {
       setReplySelected(replySelect.dataset.replySelect, replySelect.checked);
@@ -7645,6 +8072,24 @@
         toggleSelected(item);
         setIconButton(box.querySelector('[data-select-current]'), 'select', `${state.selected.has(item.selectionKey) ? 'Unselect' : 'Select'} (S)`);
       }
+      return;
+    }
+    const focusedCard = event.target.closest?.('.scg-card[data-key]');
+    const navigation = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[event.key];
+    if (app.classList.contains('open') && (focusedCard || state.gridFocusKey) && navigation) {
+      event.preventDefault();
+      const keys = state.renderedItems.map(item => item.selectionKey);
+      focusGridItem(gridNavigationTarget(keys, focusedCard?.dataset.key || state.gridFocusKey, navigation, gridColumnCount()));
+      return;
+    }
+    if (app.classList.contains('open') && focusedCard && event.target === focusedCard && (event.key === ' ' || event.key === 'Enter')) {
+      event.preventDefault();
+      const item = itemForNode(focusedCard, 'key');
+      if (event.key === ' ' && isDownloadableMedia(item)) {
+        toggleSelected(item);
+        if (state.selectedOnly) render();
+      }
+      else if (event.key === 'Enter' && isMediaItem(item)) controllers.viewer.open(item);
       return;
     }
     // One normalized chord per event, matched against the bindings, so a
