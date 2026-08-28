@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.13.0
+// @version      0.14.0
 // @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing, verified downloads, Bunkr resolution and URL list export.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.13.0';
+  const APP_VERSION = '0.14.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -37,6 +37,7 @@
 
   const DEFAULT_SETTINGS = Object.freeze({
     filter: 'all',
+    downloadState: 'all',
     compact: false,
     sort: 'thread-asc',
     groupBy: 'none',
@@ -98,6 +99,15 @@
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
   const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
+  // The gallery already knows what has been downloaded and paints a badge for
+  // it. On a second visit to a long thread that badge is the wrong shape of
+  // answer: what you want is the set that still needs doing.
+  const DOWNLOAD_STATES = Object.freeze(['all', 'not-downloaded', 'downloaded']);
+  const DOWNLOAD_STATE_LABELS = Object.freeze({
+    all: 'Any download state',
+    'not-downloaded': 'Not downloaded yet',
+    downloaded: 'Already downloaded',
+  });
   // One collator for the whole script. Passing an options object to
   // localeCompare builds a fresh one per call, and sorting a large thread by
   // author is tens of thousands of comparisons -- measured at 135ms for 5,000
@@ -110,7 +120,10 @@
     author: 'Author A-Z',
     host: 'Host A-Z',
     type: 'Media type',
+    'date-asc': 'Posted oldest first',
+    'date-desc': 'Posted newest first',
   });
+  const SORT_MODES = Object.freeze(Object.keys(SORT_LABELS));
 
   const storage = {
     mode: typeof GM_getValue === 'function' && typeof GM_setValue === 'function' ? 'Tampermonkey isolated storage' : 'page localStorage fallback',
@@ -309,9 +322,10 @@
   const state = {
     items: [],
     filter: ['all', 'image', 'video', 'link', 'text'].includes(savedSettings.filter) ? savedSettings.filter : 'all',
+    downloadState: DOWNLOAD_STATES.includes(savedSettings.downloadState) ? savedSettings.downloadState : 'all',
     query: '',
     compact: Boolean(savedSettings.compact),
-    sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
+    sort: SORT_MODES.includes(savedSettings.sort) ? savedSettings.sort : 'thread-asc',
     groupBy: savedSettings.groupBy === 'reply' ? 'reply' : 'none',
     perPage: VIEW_PAGE_SIZES.includes(Number(savedSettings.perPage)) ? Number(savedSettings.perPage) : DEFAULT_SETTINGS.perPage,
     theme: THEME_MODES.includes(savedSettings.theme)
@@ -384,15 +398,21 @@
 
   let datasetRevision = 0;
   let selectionRevision = 0;
+  // The download-state facet reads the history rather than the dataset, so the
+  // filtered view has to be invalidated when a download lands or history is
+  // cleared -- otherwise filtering to "not downloaded yet" and then downloading
+  // leaves the finished items sitting in the view.
+  let historyRevision = 0;
   let visibleItemsCache = null;
   let facetCache = null;
   let facetCountCache = null;
   let itemIndexCache = null;
 
-  function invalidateVisibleItems({ dataset = false, selection = false } = {}) {
+  function invalidateVisibleItems({ dataset = false, selection = false, history = false } = {}) {
     if (dataset) datasetRevision++;
     if (selection) selectionRevision++;
-    if (dataset || (selection && state.selectedOnly)) state.replyIndex = null;
+    if (history) historyRevision++;
+    if (dataset || (selection && state.selectedOnly) || (history && state.downloadState !== 'all')) state.replyIndex = null;
   }
 
   // Aspect ratios drive layout before an image has loaded. These four are pure
@@ -1009,7 +1029,9 @@
   // an invalidation never discards an in-flight ZIP batch's markers.
   function reloadDownloadHistory() {
     state.downloadHistory = mergeDownloadHistory(readStoredDownloadHistory(), pendingHistoryWrites);
-    updateDownloadedIndicators();
+    invalidateVisibleItems({ history: true });
+    if (state.downloadState && state.downloadState !== 'all') render();
+    else updateDownloadedIndicators();
     if (document.querySelector(`#${APP_ID} .scg-settings-panel.open`)) refreshSettingsPanel();
   }
 
@@ -1030,9 +1052,11 @@
     // Tracked separately so the next write contributes only this, not the whole
     // map this tab happens to be holding.
     pendingHistoryWrites[historyKey] = entry;
+    invalidateVisibleItems({ history: true });
     if (!deferPersist) {
       persistDownloadHistory();
-      updateDownloadedIndicators();
+      if (state.downloadState && state.downloadState !== 'all') render();
+      else updateDownloadedIndicators();
     }
     return true;
   }
@@ -1041,6 +1065,7 @@
     try {
       storage.set(SETTINGS_KEY, {
         filter: state.filter,
+        downloadState: state.downloadState,
         compact: state.compact,
         sort: state.sort,
         groupBy: state.groupBy,
@@ -1150,6 +1175,7 @@
       state.authorFilter && state.authorFilter !== 'all',
       state.hostFilter && state.hostFilter !== 'all',
       state.groupBy !== DEFAULT_SETTINGS.groupBy,
+      state.downloadState !== DEFAULT_SETTINGS.downloadState,
       Boolean(state.selectedOnly),
     ].filter(Boolean).length;
   }
@@ -1257,8 +1283,20 @@
     const postId = article?.getAttribute('data-content') || article?.id || postUrl.split('#').pop() || '';
     const numberAnchor = root.querySelector?.('.message-attribution-opposite a, a[href*="#post-"]');
     const postNumber = (numberAnchor?.textContent || '').match(/#(\d+)/)?.[1] || '';
-    return { article, body, author, postUrl, postId, postNumber };
+    return { article, body, author, postUrl, postId, postNumber, postedAt: postTimestamp(root) };
   };
+
+  // XenForo puts the reply time in the attribution header, either as an ISO
+  // datetime attribute or a unix seconds data-time. Absent or unreadable is
+  // normal for an odd template, and sorts with the oldest rather than throwing.
+  function postTimestamp(root) {
+    const node = root.querySelector?.('time[datetime], time[data-time], .message-attribution-main time');
+    if (!node) return 0;
+    const unix = Number(node.getAttribute('data-time'));
+    if (Number.isFinite(unix) && unix > 0) return Math.round(unix * 1000);
+    const parsed = Date.parse(node.getAttribute('datetime') || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
 
   function itemIsBlocked(item, patterns) {
     if (!item || !patterns || !patterns.length) return false;
@@ -1272,7 +1310,7 @@
     const roots = posts.length ? posts : [...doc.querySelectorAll('.message')];
 
     roots.forEach((root, postIndex) => {
-      const { body, author, postUrl, postId, postNumber } = postParts(root);
+      const { body, author, postUrl, postId, postNumber, postedAt } = postParts(root);
       if (!body) return;
       const content = body.cloneNode(true);
       content.querySelectorAll('.bbCodeBlock--quote, blockquote.bbCodeBlock, [data-quote], .message-signature').forEach(node => node.remove());
@@ -1282,6 +1320,7 @@
         postUrl: absoluteUrl(postUrl, base),
         postId,
         postNumber,
+        postedAt,
         pageUrl: base,
         pageNumber: pageNumberFromUrl(base),
         postIndex,
@@ -2111,8 +2150,9 @@
   function normalizedPreferences(input = {}) {
     return {
       filter: ['all', 'image', 'video', 'link', 'text'].includes(input.filter) ? input.filter : DEFAULT_SETTINGS.filter,
+      downloadState: DOWNLOAD_STATES.includes(input.downloadState) ? input.downloadState : DEFAULT_SETTINGS.downloadState,
       compact: Boolean(input.compact),
-      sort: ['thread-asc', 'thread-desc', 'author', 'host', 'type'].includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
+      sort: SORT_MODES.includes(input.sort) ? input.sort : DEFAULT_SETTINGS.sort,
       groupBy: input.groupBy === 'reply' ? 'reply' : DEFAULT_SETTINGS.groupBy,
       perPage: VIEW_PAGE_SIZES.includes(Number(input.perPage)) ? Number(input.perPage) : DEFAULT_SETTINGS.perPage,
       theme: THEME_MODES.includes(input.theme)
@@ -2139,6 +2179,7 @@
   function currentPreferences() {
     return normalizedPreferences({
       filter: state.filter,
+      downloadState: state.downloadState,
       compact: state.compact,
       sort: state.sort,
       groupBy: state.groupBy,
@@ -2169,6 +2210,7 @@
       selectedOnly: false,
       viewPage: 1,
     });
+    invalidateVisibleItems({ history: true });
     const app = document.getElementById(APP_ID);
     const search = app?.querySelector('[data-search]');
     if (search) search.value = '';
@@ -2368,6 +2410,7 @@
       type: item.type === 'image' ? 'image' : 'video',
       host: itemSourceHost(item),
       author: item.author || '',
+      postedAt: item.postedAt ? new Date(Number(item.postedAt)).toISOString() : '',
       page: Number(item.pageNumber || 0) || 0,
       reply: String(item.postNumber || ''),
       postUrl: item.postUrl || '',
@@ -2439,6 +2482,7 @@
       if (!payload || typeof payload !== 'object' || !payload.settings || typeof payload.settings !== 'object') throw new Error('This is not a valid gallery settings file');
       if (payload.downloadHistory && typeof payload.downloadHistory === 'object' && !Array.isArray(payload.downloadHistory)) {
         state.downloadHistory = normalizeDownloadHistory(payload.downloadHistory);
+        invalidateVisibleItems({ history: true });
         persistDownloadHistory({ replace: true });
       }
       applyPreferences(payload.settings, true);
@@ -2464,12 +2508,14 @@
     if (state.downloading) return false;
     state.downloadHistory = {};
     pendingHistoryWrites = {};
+    invalidateVisibleItems({ history: true });
     storage.remove(DOWNLOAD_HISTORY_KEY);
     tabSync.post('download-history-changed');
     state.downloadJobs = [];
     state.downloadProgress = blankDownloadProgress();
     scheduleDownloadUi.dirtyJobs.clear();
-    updateDownloadedIndicators();
+    if (state.downloadState && state.downloadState !== 'all') render();
+    else updateDownloadedIndicators();
     updateDownloadUi();
     refreshSettingsPanel();
     return true;
@@ -2616,6 +2662,14 @@
     progress.querySelector('[data-action="download-details"]')?.setAttribute('aria-expanded', String(state.downloadDetailsOpen));
     progress.querySelector('.scg-progress-fill').style.width = `${percent}%`;
     progress.querySelector('.scg-progress-text').textContent = p.label || (jobs.length ? `${finished} / ${jobs.length}` : 'Downloads idle');
+    const retry = progress.querySelector('[data-action="retry-failed"]');
+    if (retry) {
+      const retryable = state.downloadJobs.filter(job => job.status === 'failed' || job.status === 'verification').length;
+      retry.toggleAttribute('hidden', retryable === 0 || state.downloading);
+      const label = `Retry failed (${retryable})`;
+      retry.querySelector('span').textContent = label;
+      retry.setAttribute('aria-label', label);
+    }
     const overall = progress.querySelector('.scg-download-overall');
     if (overall) overall.textContent = jobs.length ? `${finished} of ${jobs.length} complete${loaded ? ` - ${formatBytes(loaded)}${total && totalsKnown ? ` / ${formatBytes(total)}` : ''}` : ''}` : 'No downloads yet.';
     const list = progress.querySelector('.scg-download-jobs');
@@ -2822,7 +2876,7 @@
   }
 
   function buildManifestCsv(entries, archiveName) {
-    const columns = ['archive_path', 'stored', 'duplicate_of', 'duplicate_archive', 'media_type', 'page', 'reply', 'author', 'host', 'source_url', 'post_url', 'bytes', 'mime', 'resolution_method', 'crc32', 'archive'];
+    const columns = ['archive_path', 'stored', 'duplicate_of', 'duplicate_archive', 'media_type', 'page', 'reply', 'author', 'posted_at', 'host', 'source_url', 'post_url', 'bytes', 'mime', 'resolution_method', 'crc32', 'archive'];
     const rows = entries.map(entry => {
       const item = entry.item || {};
       const sourceUrl = normalizeSourceUrl(item.originalLink || item.url || '');
@@ -2835,6 +2889,7 @@
         Number(item.pageNumber || 1),
         String(item.postNumber || item.postId || Number(item.postIndex || 0) + 1),
         item.author || 'Unknown',
+        item.postedAt ? new Date(Number(item.postedAt)).toISOString() : '',
         hostOf(sourceUrl),
         sourceUrl,
         normalizeSourceUrl(item.postUrl || ''),
@@ -3094,7 +3149,31 @@
     }
   }
 
-  async function bulkDownload() {
+  // The jobs that ended without a file. Verification means the host wanted a
+  // visit rather than that the link is dead, so both are worth another go.
+  function retryableDownloadItems() {
+    const seen = new Set();
+    return state.downloadJobs
+      .filter(job => job.status === 'failed' || job.status === 'verification')
+      .map(job => job.item)
+      .filter(item => {
+        if (!item || !item.selectionKey || seen.has(item.selectionKey)) return false;
+        seen.add(item.selectionKey);
+        return true;
+      });
+  }
+
+  // A resolver that just failed is inside a sixty-second cooldown and would
+  // hand back the same failure without touching the network, which would make
+  // Retry look broken. Retrying is an explicit instruction to try again now.
+  function clearResolutionFailure(item) {
+    if (!item || !item.resolution) return;
+    if (item.resolution.candidate?.status === 'failed') item.resolution.candidate = null;
+    item.resolution.attempted = false;
+    delete item.resolution.failedAt;
+  }
+
+  async function bulkDownload(requestedItems = selectedMediaItems()) {
     if (state.downloading) {
       state.cancelDownload = true;
       state.downloadProgress.label = 'Canceling active downloads...';
@@ -3104,7 +3183,9 @@
       updateDownloadUi();
       return;
     }
-    const selected = selectedMediaItems();
+    const selected = Array.isArray(requestedItems)
+      ? requestedItems.filter(isDownloadableMedia)
+      : selectedMediaItems();
     if (!selected.length) return notify('Select images or videos first.');
 
     state.downloadJobs = [];
@@ -3211,7 +3292,8 @@
     p.label = stopped
       ? `Canceled - unfinished ZIP discarded${p.ok ? `, ${p.ok} files were already saved in earlier parts` : ''}`
       : `Finished - ${p.ok} zipped${p.duplicates ? `, ${p.duplicates} duplicates merged` : ''}${p.skipped ? `, ${p.skipped} already downloaded` : ''}${p.verification ? `, ${p.verification} need verification` : ''}${p.failed ? `, ${p.failed} failed` : ''}`;
-    updateDownloadUi();
+    if (state.downloadState !== 'all') render();
+    else updateDownloadUi();
     notify(p.label, 6000);
   }
 
@@ -3252,6 +3334,8 @@
     if (cache
       && cache.dataset === datasetRevision
       && cache.selection === selectionRevision
+      && cache.history === historyRevision
+      && cache.downloadState === state.downloadState
       && cache.filter === state.filter
       && cache.query === state.query
       && cache.sort === state.sort
@@ -3268,10 +3352,16 @@
     else if (state.sort === 'author') filtered.sort((a, b) => alpha(a.author, b.author) || thread(a, b));
     else if (state.sort === 'host') filtered.sort((a, b) => alpha(itemSourceHost(a), itemSourceHost(b)) || thread(a, b));
     else if (state.sort === 'type') filtered.sort((a, b) => (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) || thread(a, b));
+    // A reply with no readable timestamp sorts with the oldest rather than
+    // vanishing to one end, and thread order breaks every tie.
+    else if (state.sort === 'date-asc') filtered.sort((a, b) => (Number(a.postedAt || 0) - Number(b.postedAt || 0)) || thread(a, b));
+    else if (state.sort === 'date-desc') filtered.sort((a, b) => (Number(b.postedAt || 0) - Number(a.postedAt || 0)) || thread(a, b));
     else filtered.sort(thread);
     visibleItemsCache = {
       dataset: datasetRevision,
       selection: selectionRevision,
+      history: historyRevision,
+      downloadState: state.downloadState,
       filter: state.filter,
       query: state.query,
       sort: state.sort,
@@ -3321,6 +3411,10 @@
       author: !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter,
       host: !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter,
       selected: !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey)),
+      // A legacy marker is not a verified download, so it counts as outstanding:
+      // the whole point of the filter is to find what still needs doing.
+      download: state.downloadState === 'all'
+        || (isMediaItem(item) && (state.downloadState === 'downloaded' ? wasDownloaded(item) : !wasDownloaded(item))),
       query: !q || item.searchText.includes(q),
     };
   }
@@ -3329,7 +3423,8 @@
     const parts = filterParts(item, q);
     const authorMatch = skip === 'author' || parts.author;
     const hostMatch = skip === 'host' || parts.host;
-    return parts.type && authorMatch && hostMatch && parts.selected && parts.query;
+    const downloadMatch = skip === 'download' || parts.download;
+    return parts.type && authorMatch && hostMatch && parts.selected && downloadMatch && parts.query;
   }
 
   function replyDownloadableItems(key) {
@@ -3689,6 +3784,9 @@
     if (query) chips.push({ facet: 'query', label: 'Search', value: query });
     if (view.authorFilter && view.authorFilter !== 'all') chips.push({ facet: 'author', label: 'Author', value: view.authorFilter });
     if (view.hostFilter && view.hostFilter !== 'all') chips.push({ facet: 'host', label: 'Host', value: view.hostFilter });
+    if (view.downloadState && view.downloadState !== 'all') {
+      chips.push({ facet: 'download', label: 'Downloads', value: DOWNLOAD_STATE_LABELS[view.downloadState] || view.downloadState });
+    }
     if (view.selectedOnly) chips.push({ facet: 'selected', label: 'Showing', value: 'Selected only' });
     return chips;
   }
@@ -3699,7 +3797,8 @@
     if (facet === 'author') return { authorFilter: 'all' };
     if (facet === 'host') return { hostFilter: 'all' };
     if (facet === 'selected') return { selectedOnly: false };
-    if (facet === 'all') return { filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false };
+    if (facet === 'download') return { downloadState: 'all' };
+    if (facet === 'all') return { filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all' };
     return null;
   }
 
@@ -3715,8 +3814,8 @@
   // rather than on the dataset alone.
   function facetCounts() {
     const signature = [
-      datasetRevision, selectionRevision, state.filter, state.query,
-      state.authorFilter, state.hostFilter, state.selectedOnly,
+      datasetRevision, selectionRevision, historyRevision, state.filter, state.query,
+      state.authorFilter, state.hostFilter, state.selectedOnly, state.downloadState,
     ].join('\u0000');
     if (facetCountCache && facetCountCache.signature === signature) return facetCountCache;
     const q = normalizedQuery();
@@ -3726,7 +3825,7 @@
       // One evaluation, both answers: the shared facets decide whether the item
       // counts at all, then each list ignores only its own.
       const parts = filterParts(item, q);
-      if (!parts.type || !parts.selected || !parts.query) return;
+      if (!parts.type || !parts.selected || !parts.download || !parts.query) return;
       if (item.author && parts.host) authors.set(item.author, (authors.get(item.author) || 0) + 1);
       if (parts.author) {
         const host = itemSourceHost(item);
@@ -4368,6 +4467,7 @@
     refreshRefineTrigger();
     app.querySelector('[data-sort]').value = state.sort;
     app.querySelector('[data-group-by]').value = state.groupBy;
+    app.querySelector('[data-download-state]').value = state.downloadState;
     updateViewPager(matched.length);
     updateSelectionUi();
     updateDownloadUi();
@@ -4668,7 +4768,7 @@
           <aside class="scg-viewer-details">
             <div class="scg-viewer-details-head"><span>${icon(item.type === 'image' ? 'image' : 'video')}</span><div><b>${escapeHtml(typeLabel)}</b><small>${escapeHtml(sourceHost)}</small></div></div>
             ${item.caption ? `<p class="scg-viewer-caption">${escapeHtml(item.caption)}</p>` : ''}
-            <dl><div><dt>Resolution</dt><dd data-viewer-resolution>${escapeHtml(resolutionLabel)}</dd></div><div><dt>Posted by</dt><dd>${escapeHtml(item.author || 'Unknown')}</dd></div><div><dt>Location</dt><dd>${escapeHtml(viewerReplyLabel(item))}, page ${Number(item.pageNumber || 1)}</dd></div><div><dt>Download</dt><dd>${escapeHtml(savedLabel)}</dd></div><div><dt>Collection</dt><dd>${items.length} filtered media items</dd></div></dl>
+            <dl><div><dt>Resolution</dt><dd data-viewer-resolution>${escapeHtml(resolutionLabel)}</dd></div><div><dt>Posted by</dt><dd>${escapeHtml(item.author || 'Unknown')}</dd></div><div><dt>Location</dt><dd>${escapeHtml(viewerReplyLabel(item))}, page ${Number(item.pageNumber || 1)}</dd></div>${item.postedAt ? `<div><dt>Posted</dt><dd>${escapeHtml(new Date(Number(item.postedAt)).toLocaleString())}</dd></div>` : ''}<div><dt>Download</dt><dd>${escapeHtml(savedLabel)}</dd></div><div><dt>Collection</dt><dd>${items.length} filtered media items</dd></div></dl>
             <div class="scg-viewer-details-links"><a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Open source</span></a><a href="${escapeHtml(item.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>View reply</span></a></div>
             <p class="scg-viewer-shortcuts"><b>Keys</b><br>← → previous / next · wheel or + − zoom · 0 fit<br>I details · F fullscreen · Space play or pause<br>D download · S select · Esc close</p>
           </aside>
@@ -7056,6 +7156,7 @@
               <div class="scg-refinebar">
                 <label>Sort <select data-sort>${Object.entries(SORT_LABELS).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></label>
                 <label>Group <select data-group-by><option value="none">Individual cards</option><option value="reply">Group by reply</option></select></label>
+                <label>Downloads <select data-download-state>${DOWNLOAD_STATES.map(value => `<option value="${value}">${escapeHtml(DOWNLOAD_STATE_LABELS[value])}</option>`).join('')}</select></label>
                 <label>Author <select data-author-filter></select></label>
                 <label>Host <select data-host-filter></select></label>
                 <label>Per view <select data-page-size>${VIEW_PAGE_SIZES.map(size => `<option value="${size}">${viewPageSizeLabel(size)}</option>`).join('')}</select></label>
@@ -7097,7 +7198,7 @@
         <div class="scg-progress">
           <button class="scg-progress-summary scg-tip-up scg-tip-end" data-action="download-details" data-tooltip="Open the download queue" aria-expanded="false" aria-controls="scg-tl-download-queue"><span class="scg-progress-track"><span class="scg-progress-fill"></span></span><span class="scg-progress-text">Downloads idle</span></button>
           <aside class="scg-download-popover" id="scg-tl-download-queue" aria-label="Download queue">
-            <header><b>Download queue</b><div><button data-action="clear-download-history" data-tooltip="Forget saved-file markers" aria-label="Clear download history">${iconWell('history')}<span>Clear history</span></button><button data-action="close-download-details" aria-label="Close the download queue">${iconWell('close')}<span>Close</span></button></div></header>
+            <header><b>Download queue</b><div><button data-action="retry-failed" data-tooltip="Queue the failed and unverified files again" aria-label="Retry failed downloads" hidden>${iconWell('reset')}<span>Retry failed</span></button><button data-action="clear-download-history" data-tooltip="Forget saved-file markers" aria-label="Clear download history">${iconWell('history')}<span>Clear history</span></button><button data-action="close-download-details" aria-label="Close the download queue">${iconWell('close')}<span>Close</span></button></div></header>
             <div class="scg-download-overall" role="status" aria-live="polite">No downloads yet.</div>
             <div class="scg-download-jobs"></div>
           </aside>
@@ -7191,6 +7292,9 @@
   app.querySelector('[data-author-filter]').onchange = event => commitState({ authorFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-host-filter]').onchange = event => commitState({ hostFilter: event.target.value, viewPage: 1 });
   app.querySelector('[data-group-by]').onchange = event => commitState({ groupBy: event.target.value, viewPage: 1 }, { persist: true });
+  app.querySelector('[data-download-state]').onchange = event => {
+    commitState({ downloadState: DOWNLOAD_STATES.includes(event.target.value) ? event.target.value : 'all', viewPage: 1 }, { persist: true });
+  };
   app.querySelector('[data-selected-only]').onclick = () => commitState({ selectedOnly: !state.selectedOnly, viewPage: 1 });
   app.querySelector('[data-action="collapse-all"]').onclick = () => {
     if (setReplyGroupsCollapsed(visibleItems(), true)) render();
@@ -7212,7 +7316,7 @@
     app.querySelector('[data-search]').value = '';
     commitState({
       filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
-      sort: 'thread-asc', groupBy: 'none', viewPage: 1,
+      downloadState: 'all', sort: 'thread-asc', groupBy: 'none', viewPage: 1,
     }, { persist: true });
   };
   app.querySelector('[data-action="filters-toggle"]').onclick = () => {
@@ -7352,7 +7456,9 @@
       clearSelectionAndRefresh();
     };
   });
-  app.querySelector('[data-action="download-selected"]').onclick = controllers.downloads.bulk;
+  // Wrapped: onclick hands the handler a PointerEvent, and bulkDownload now
+  // takes an explicit item list as its first argument.
+  app.querySelector('[data-action="download-selected"]').onclick = () => controllers.downloads.bulk();
   app.querySelector('[data-action="download-details"]').onclick = event => {
     event.stopPropagation();
     state.downloadDetailsOpen = !state.downloadDetailsOpen;
@@ -7363,6 +7469,15 @@
     state.downloadDetailsOpen = false;
     updateDownloadUi();
     app.querySelector('[data-action="download-details"]')?.focus({ preventScroll: true });
+  };
+  app.querySelector('[data-action="retry-failed"]').onclick = async event => {
+    event.stopPropagation();
+    if (state.downloading) return notify('Wait for the current queue to finish or cancel it first.');
+    const items = retryableDownloadItems();
+    if (!items.length) return notify('Nothing in the queue failed.');
+    items.forEach(clearResolutionFailure);
+    notify(`Retrying ${items.length} ${items.length === 1 ? 'file' : 'files'}.`);
+    await controllers.downloads.bulk(items);
   };
   app.querySelector('[data-action="clear-download-history"]').onclick = async event => {
     event.stopPropagation();

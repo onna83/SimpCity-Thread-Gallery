@@ -48,8 +48,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '0.13.0');
-  assert.match(source, /const APP_VERSION = '0\.13\.0'/);
+  assert.equal(metadataValue('version'), '0.14.0');
+  assert.match(source, /const APP_VERSION = '0\.14\.0'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -250,6 +250,7 @@ test('collapsed groups omit cards, expose aria-expanded, and reset with the data
 test('reply-level selection derives checked and indeterminate state from the data model', () => {
   let invalidations = 0;
   const state = {
+    downloadState: 'all',
     items: [
       { reply: 'one', selectionKey: 'image-1', downloadable: true },
       { reply: 'one', selectionKey: 'video-1', downloadable: true },
@@ -267,6 +268,8 @@ test('reply-level selection derives checked and indeterminate state from the dat
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => { invalidations++; },
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -292,6 +295,7 @@ test('reply-level selection derives checked and indeterminate state from the dat
 test('reply-level selection respects the active media type view', () => {
   const state = {
     filter: 'image',
+    downloadState: 'all',
     items: [
       { reply: 'one', selectionKey: 'image-1', type: 'image', downloadable: true },
       { reply: 'one', selectionKey: 'video-1', type: 'video', downloadable: true },
@@ -309,6 +313,8 @@ test('reply-level selection respects the active media type view', () => {
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -331,6 +337,7 @@ test('reply-level selection respects the active media type view', () => {
 
 test('reply selection works while collapsed and spans all indexed reply items', () => {
   const state = {
+    downloadState: 'all',
     items: Array.from({ length: 75 }, (_, index) => ({
       reply: 'large-reply',
       selectionKey: `media-${index}`,
@@ -348,6 +355,8 @@ test('reply selection works while collapsed and spans all indexed reply items', 
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -458,6 +467,7 @@ test('clearing download history removes persisted markers and completed queue ro
       DOWNLOAD_HISTORY_KEY: 'history-key',
       storage: { remove: key => removed.push(key) },
       tabSync: { post: type => broadcasts.push(type) },
+      invalidateVisibleItems: () => {},
       pendingHistoryWrites: { stale: { verified: true, time: 1 } },
       blankDownloadProgress: () => ({ total: 0 }),
       scheduleDownloadUi: { dirtyJobs },
@@ -476,7 +486,7 @@ test('clearing download history removes persisted markers and completed queue ro
   assert.deepEqual(broadcasts, ['download-history-changed']);
   // The dirty delta has to go too, or this tab's next write re-contributes
   // records the user just cleared.
-  assert.match(source, /pendingHistoryWrites = \{\};\s*storage\.remove\(DOWNLOAD_HISTORY_KEY\)/);
+  assert.match(source, /pendingHistoryWrites = \{\};[\s\S]*?storage\.remove\(DOWNLOAD_HISTORY_KEY\)/);
   assert.equal(dirtyJobs.size, 0);
   assert.equal(indicatorUpdates, 1);
   assert.equal(queueUpdates, 1);
@@ -505,17 +515,20 @@ test('active filters are visible and individually reversible', () => {
     'function activeFacetChips',
     'function facetOptions',
     ['activeFacetChips', 'facetClearPatch'],
+    { DOWNLOAD_STATE_LABELS: { 'not-downloaded': 'Not downloaded', downloaded: 'Downloaded' } },
   );
   const labels = { image: 'Images' };
 
   assert.deepEqual(plain(activeFacetChips({ filter: 'all', query: '   ', authorFilter: 'all', hostFilter: 'all' }, labels)), []);
 
   const chips = plain(activeFacetChips({
-    filter: 'image', query: '  beach ', authorFilter: 'anon', hostFilter: 'bunkr.cr', selectedOnly: true,
+    filter: 'image', query: '  beach ', authorFilter: 'anon', hostFilter: 'bunkr.cr',
+    downloadState: 'not-downloaded', selectedOnly: true,
   }, labels));
-  assert.deepEqual(chips.map(chip => chip.facet), ['filter', 'query', 'author', 'host', 'selected']);
+  assert.deepEqual(chips.map(chip => chip.facet), ['filter', 'query', 'author', 'host', 'download', 'selected']);
   assert.equal(chips[0].value, 'Images');
   assert.equal(chips[1].value, 'beach');
+  assert.equal(chips[4].value, 'Not downloaded');
 
   // Sort and grouping rearrange what is already there rather than withholding
   // anything, so they do not belong in a bar about what is being hidden.
@@ -523,9 +536,157 @@ test('active filters are visible and individually reversible', () => {
 
   assert.deepEqual(plain(facetClearPatch('host')), { hostFilter: 'all' });
   assert.deepEqual(plain(facetClearPatch('all')), {
-    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
+    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false, downloadState: 'all',
   });
   assert.equal(facetClearPatch('nonsense'), null);
+});
+
+test('the download facet isolates saved and outstanding media', () => {
+  const state = {
+    filter: 'all', query: '', authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
+    downloadState: 'not-downloaded', selected: new Set(),
+  };
+  const { matchesActiveFilters } = evaluateSlice(
+    'function filterParts',
+    'function replyDownloadableItems',
+    ['matchesActiveFilters'],
+    {
+      state,
+      normalizedQuery: () => '',
+      itemSourceHost: item => item.host || '',
+      isDownloadableMedia: item => item.downloadable !== false,
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
+    },
+  );
+  const outstanding = { type: 'image', downloaded: false };
+  const saved = { type: 'video', downloaded: true };
+  const legacy = { type: 'image', downloaded: false, legacy: true };
+  const text = { type: 'text', downloaded: false };
+
+  assert.equal(matchesActiveFilters(outstanding), true);
+  assert.equal(matchesActiveFilters(legacy), true, 'an unverified legacy marker remains outstanding');
+  assert.equal(matchesActiveFilters(saved), false);
+  assert.equal(matchesActiveFilters(text), false, 'non-media is not something left to download');
+  assert.equal(matchesActiveFilters(saved, '', 'download'), true, 'a facet can count without filtering against itself');
+
+  state.downloadState = 'downloaded';
+  assert.equal(matchesActiveFilters(outstanding), false);
+  assert.equal(matchesActiveFilters(saved), true);
+  assert.equal(matchesActiveFilters(text), false);
+
+  state.downloadState = 'all';
+  assert.equal(matchesActiveFilters(text), true);
+  assert.match(source, /cache\.history === historyRevision/);
+  assert.match(source, /invalidateVisibleItems\(\{ history: true \}\)/);
+  const historyReload = source.slice(source.indexOf('function reloadDownloadHistory'), source.indexOf('function rememberDownloaded'));
+  const historyClear = source.slice(source.indexOf('function clearDownloadHistory'), source.indexOf('function clearDiagnostics'));
+  assert.match(historyReload, /state\.downloadState && state\.downloadState !== 'all'\) render\(\)/,
+    'a cross-tab history change must refresh an active download-state view');
+  assert.match(historyClear, /state\.downloadState && state\.downloadState !== 'all'\) render\(\)/,
+    'clearing history must refresh an active download-state view');
+  assert.match(source, /if \(state\.downloadState !== 'all'\) render\(\);\s*\r?\n\s*else updateDownloadUi\(\);\s*\r?\n\s*notify\(p\.label/,
+    'a finished ZIP queue must add or remove cards immediately');
+});
+
+test('retry failed keeps only unique failed jobs and clears resolver cooldowns', () => {
+  const failed = {
+    selectionKey: 'failed',
+    resolution: { attempted: true, failedAt: 123, candidate: { status: 'failed', error: 'expired' } },
+  };
+  const verify = { selectionKey: 'verify' };
+  const ignored = { selectionKey: 'saved' };
+  const state = {
+    downloadJobs: [
+      { status: 'failed', item: failed },
+      { status: 'verification', item: failed },
+      { status: 'verification', item: verify },
+      { status: 'saved', item: ignored },
+      { status: 'failed', item: null },
+    ],
+  };
+  const { retryableDownloadItems, clearResolutionFailure } = evaluateSlice(
+    'function retryableDownloadItems',
+    'async function bulkDownload',
+    ['retryableDownloadItems', 'clearResolutionFailure'],
+    { state },
+  );
+
+  assert.deepEqual(plain(retryableDownloadItems().map(item => item.selectionKey)), ['failed', 'verify']);
+  clearResolutionFailure(failed);
+  assert.equal(failed.resolution.attempted, false);
+  assert.equal(failed.resolution.candidate, null);
+  assert.equal('failedAt' in failed.resolution, false);
+
+  assert.match(source, /async function bulkDownload\(requestedItems = selectedMediaItems\(\)\)/);
+  assert.match(source, /\[data-action="download-selected"\]'\)\.onclick = \(\) => controllers\.downloads\.bulk\(\)/);
+  assert.match(source, /job\.status === 'failed' \|\| job\.status === 'verification'/);
+  assert.match(source, /data-action="retry-failed"/);
+});
+
+test('post dates are parsed, sorted, and carried into exports', () => {
+  const { postTimestamp } = evaluateSlice(
+    'function postTimestamp',
+    'function itemIsBlocked',
+    ['postTimestamp'],
+  );
+  const node = values => ({ getAttribute: key => values[key] ?? null });
+  const root = values => ({ querySelector: () => values ? node(values) : null });
+  assert.equal(postTimestamp(root({ 'data-time': '1710000000' })), 1710000000000);
+  assert.equal(postTimestamp(root({ datetime: '2024-03-10T12:30:00.000Z' })), Date.parse('2024-03-10T12:30:00.000Z'));
+  assert.equal(postTimestamp(root({ datetime: 'not-a-date' })), 0);
+  assert.equal(postTimestamp(root(null)), 0);
+
+  const items = [
+    { id: 'newer', postedAt: 300, pageNumber: 1, postIndex: 2, mediaIndex: 0, type: 'image' },
+    { id: 'unknown', postedAt: 0, pageNumber: 1, postIndex: 0, mediaIndex: 0, type: 'image' },
+    { id: 'older', postedAt: 100, pageNumber: 1, postIndex: 1, mediaIndex: 0, type: 'image' },
+  ];
+  const state = {
+    items, sort: 'date-asc', downloadState: 'all', filter: 'all', query: '', groupBy: 'none',
+    authorFilter: 'all', hostFilter: 'all', selectedOnly: false,
+  };
+  const { visibleItems } = evaluateSlice(
+    'function compareThreadOrder',
+    'function buildViewPages',
+    ['visibleItems'],
+    {
+      state, visibleItemsCache: null, datasetRevision: 1, selectionRevision: 0, historyRevision: 0,
+      normalizedQuery: () => '', matchesActiveFilters: () => true, compareText: () => 0,
+      itemSourceHost: () => '', TYPE_ORDER: { image: 0 },
+    },
+  );
+  assert.deepEqual(plain(visibleItems().map(item => item.id)), ['unknown', 'older', 'newer']);
+  state.sort = 'date-desc';
+  assert.deepEqual(plain(visibleItems().map(item => item.id)), ['newer', 'older', 'unknown']);
+
+  const { buildMediaExportRows } = evaluateSlice(
+    'function buildMediaExportRows',
+    'function exportMediaUrls',
+    ['buildMediaExportRows'],
+    {
+      mediaExportUrl: item => item.url,
+      itemSourceHost: () => 'cdn.test',
+      wasDownloaded: () => false,
+    },
+  );
+  const exported = plain(buildMediaExportRows([{ type: 'image', url: 'https://cdn.test/a.jpg', postedAt: 1710000000000 }]));
+  assert.equal(exported[0].postedAt, '2024-03-09T16:00:00.000Z');
+
+  const { buildManifestCsv } = evaluateSlice(
+    'function csvCell',
+    'function timestampForFilename',
+    ['buildManifestCsv'],
+    { normalizeSourceUrl: String, hostOf: () => 'cdn.test' },
+  );
+  const manifest = buildManifestCsv([{
+    item: { type: 'image', url: 'https://cdn.test/a.jpg', postedAt: 1710000000000 },
+    archivePath: 'a.jpg', validation: { size: 3, mime: 'image/jpeg' }, crc: 1,
+  }], 'part.zip');
+  assert.match(manifest, /^\uFEFFarchive_path,[^\r\n]*posted_at,/);
+  assert.match(manifest, /2024-03-09T16:00:00\.000Z/);
+  assert.match(source, /<dt>Posted<\/dt>/);
+  assert.match(source, /const \{ body, author, postUrl, postId, postNumber, postedAt \} = postParts\(root\)/);
 });
 
 test('facet counts answer what each value would give, and the summary states the whole', () => {
@@ -536,7 +697,7 @@ test('facet counts answer what each value would give, and the summary states the
   // One evaluation per item feeds both lists: the shared facets decide whether
   // it counts at all, then each list ignores only its own.
   assert.match(source, /const parts = filterParts\(item, q\);/);
-  assert.match(source, /if \(!parts\.type \|\| !parts\.selected \|\| !parts\.query\) return;/);
+  assert.match(source, /if \(!parts\.type \|\| !parts\.selected \|\| !parts\.download \|\| !parts\.query\) return;/);
   assert.match(source, /if \(item\.author && parts\.host\)/);
   assert.match(source, /if \(parts\.author\) \{/);
   // Counts move with every other facet, so this cache cannot key on the dataset.
@@ -699,6 +860,7 @@ test('long tooltips wrap above adjacent controls and the download queue Close ac
 test('reply-level selection respects the active search, author and host filters', () => {
   const state = {
     filter: 'all',
+    downloadState: 'all',
     query: 'holiday',
     authorFilter: 'ana',
     hostFilter: 'all',
@@ -720,6 +882,8 @@ test('reply-level selection respects the active search, author and host filters'
       isDownloadableMedia: item => item.downloadable,
       itemSourceHost: item => item.host,
       invalidateVisibleItems: () => {},
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -788,6 +952,7 @@ test('reply selection reads the prebuilt index instead of rescanning every item'
     // Any fallback path has to touch state.items; the getter proves it doesn't.
     get items() { itemScans++; return []; },
     selected: new Set(['a']),
+    downloadState: 'all',
     replyIndex: new Map([['one', [
       { reply: 'one', selectionKey: 'a', downloadable: true },
       { reply: 'one', selectionKey: 'b', downloadable: true },
@@ -802,6 +967,8 @@ test('reply selection reads the prebuilt index instead of rescanning every item'
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -816,6 +983,7 @@ test('reply selection reads the prebuilt index instead of rescanning every item'
 test('reply selection still works without an index', () => {
   const state = {
     replyIndex: null,
+    downloadState: 'all',
     items: [
       { reply: 'one', selectionKey: 'a', type: 'image', downloadable: true },
       { reply: 'two', selectionKey: 'b', type: 'image', downloadable: true },
@@ -831,6 +999,8 @@ test('reply selection still works without an index', () => {
       replyKey: item => item.reply,
       isDownloadableMedia: item => item.downloadable,
       invalidateVisibleItems: () => {},
+      isMediaItem: item => ['image', 'video', 'embed'].includes(item.type),
+      wasDownloaded: item => Boolean(item.downloaded),
     },
   );
 
@@ -850,7 +1020,7 @@ test('derived facet lists are memoized on the dataset revision', () => {
 
 test('the reply index is rebuilt per render and dropped only when eligibility can change', () => {
   assert.match(source, /state\.replyIndex = !state\.scanning && state\.groupBy === 'reply' \? buildReplyIndex\(matched\) : null/);
-  assert.match(source, /if \(dataset \|\| \(selection && state\.selectedOnly\)\) state\.replyIndex = null/);
+  assert.match(source, /if \(dataset \|\| \(selection && state\.selectedOnly\) \|\| \(history && state\.downloadState !== 'all'\)\) state\.replyIndex = null/);
 });
 
 test('aspect ratios are clamped, hinted, averaged and evicted', () => {
@@ -936,11 +1106,13 @@ test('stored midnight and graphite settings migrate to dark plus an accent', () 
     {
       THEME_MODES: ['dark', 'light'],
       ACCENT_MODES: ACCENTS,
+      DOWNLOAD_STATES: ['all', 'not-downloaded', 'downloaded'],
+      SORT_MODES: ['thread-asc', 'thread-desc', 'author', 'host', 'type', 'date-asc', 'date-desc'],
       LAYOUT_MODES: ['masonry', 'grid'],
       LEGACY_THEME_ACCENTS: { midnight: 'indigo', graphite: 'amber' },
       VIEW_PAGE_SIZES: [40, 60, 100, 200, 300, 500],
       normalizedShortcuts: () => ({}),
-      DEFAULT_SETTINGS: { filter: 'all', sort: 'thread-asc', groupBy: 'none', perPage: 60, theme: 'dark', accent: 'blue', layoutMode: 'masonry', cardScale: 100, downloadConcurrency: 2, zipPartSizeMb: 300, zipPartMaxFiles: 24, archiveLayout: 'page-author', blockPatterns: '' },
+      DEFAULT_SETTINGS: { filter: 'all', downloadState: 'all', sort: 'thread-asc', groupBy: 'none', perPage: 60, theme: 'dark', accent: 'blue', layoutMode: 'masonry', cardScale: 100, downloadConcurrency: 2, zipPartSizeMb: 300, zipPartMaxFiles: 24, archiveLayout: 'page-author', blockPatterns: '' },
     },
   );
 
@@ -1822,6 +1994,7 @@ function loadHistoryPersistence(store, state) {
         return merged;
       },
       downloadHistoryKey: item => item.key,
+      invalidateVisibleItems: () => {},
       updateDownloadedIndicators: () => {},
       refreshSettingsPanel: () => {},
       document: { querySelector: () => null },

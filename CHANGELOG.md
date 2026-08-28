@@ -2,6 +2,14 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.14.0 (timeline fork — unreleased)
+
+Closes the short archiving loop: see what remains, retry what failed, and keep the reply date with the saved record.
+
+- **Added a download-state filter.** Refine can now show all media, only files not yet verified as downloaded, or only verified downloads. The state persists with the other preferences, appears as a removable active-filter chip, participates in the visible-results cache, and refreshes immediately when history changes. Legacy markers deliberately remain in the outstanding set until a response has passed byte validation.
+- **Added Retry failed to the download queue.** Failed and verification-needed jobs remain actionable after a queue finishes. Retrying deduplicates their media items, clears a resolver's short failure cooldown, and feeds only those items back through the existing validated ZIP pipeline. The primary Download button is wrapped explicitly so its click event can never be mistaken for an item list.
+- **Added reply timestamps throughout the archive.** XenForo `datetime` and unix `data-time` values are indexed once per reply; the gallery can sort oldest/newest, JSON media-list exports carry an ISO timestamp, `manifest.csv` includes `posted_at`, and the viewer details rail shows the posted date when available. Missing or malformed timestamps remain valid and sort as the oldest.
+
 ## 0.13.0 (timeline fork — unreleased)
 
 Performance pass. No interface changes. Figures are from `tests/bench.cjs` on a synthetic 5,000-item thread with 1,000 embeds — run it yourself with `node tests/bench.cjs`.
