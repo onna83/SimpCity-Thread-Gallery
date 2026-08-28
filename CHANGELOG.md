@@ -2,6 +2,19 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 0.13.0 (timeline fork — unreleased)
+
+Performance pass. No interface changes. Figures are from `tests/bench.cjs` on a synthetic 5,000-item thread with 1,000 embeds — run it yourself with `node tests/bench.cjs`.
+
+- **The scroll path was spending most of a frame budget re-parsing URLs.** Scrolling ran `updateSelectionUi`, which filtered every indexed item through `isDownloadableMedia`, which for an embed reached `hasDirectResolver` — roughly twenty-eight `new URL()` constructions per item, because `normalizeSourceUrl` is itself three. Measured at **14.3 ms per scroll frame** against a 16.7 ms budget for 60fps, before any mounting, layout or paint. Two changes: the selection scan is gone from the frame entirely (a mounted card already renders its own selected state, and scrolling cannot change the selection), and the work it did is now derived once per item at index time. The same scan, if something does run it, is **0.9 ms — 16× faster**.
+- **Download-history keys are derived once instead of per card.** `downloadHistoryKey` called `threadBaseUrl` — another URL construction — and every card asked twice, via `wasDownloaded` and `hasLegacyDownload`, plus once more per card in `updateDownloadedIndicators`. **9.6 ms → 0.06 ms** across 5,000 items.
+- **One collator instead of tens of thousands.** Three sorts passed an options object to `localeCompare`, which builds a fresh collator per comparison; sorting 5,000 items by author is around 60,000 comparisons. **154 ms → 2.3 ms, 68× faster.** This ran on every keystroke in the search box.
+- **Most scroll frames now do nothing at all.** `updateFlowWindow` recomputed its keep-set, unmounted and remounted on every frame even when the visible range was identical, which it is for most frames. It returns early instead.
+- **Image ratios settle together rather than re-packing per frame.** A late measurement re-packs the whole list, and during a first scroll they arrive continuously. Ratio-driven relayouts coalesce on a 150ms timer; a resize or density change — where the reader is waiting on the geometry — stays immediate.
+- Smaller: `escapeHtml` allocated a fresh escape map for every matched character; icon markup is memoized on name and class rather than rebuilt for every card the window remounts; type counts are memoized on the dataset revision like the facet lists already were; download-history entries are only rebuilt when they are not already canonical, rather than 5,000 fresh objects on every write; the facet counts evaluate each item once instead of twice; the download queue makes one pass over its jobs instead of four; the assumed aspect ratio is hoisted out of a map over the filtered set.
+- The uniform grid — the one live path that still mounts every matched card — now declares `content-visibility` with an exact intrinsic size, so the browser can skip layout and paint for off-screen cards. Deliberately not applied to masonry, whose cards sit in CSS multi-column and have to be seen to be balanced.
+- Two items from the plan were measured and left alone: re-sorting the cell index is 1.06 ms per relayout, which coalescing already limits to once per 150ms, so a k-way merge was not worth changing a tested code path; and the playback-position and active-player maps are already cleared with the dataset.
+
 ## 0.12.1 (timeline fork — unreleased)
 
 Defect pass over 0.12.0. No new capability.

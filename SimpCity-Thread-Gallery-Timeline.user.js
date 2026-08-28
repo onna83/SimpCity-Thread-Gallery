@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.12.1
+// @version      0.13.0
 // @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing with filtering, lightbox viewing, verified downloads, Bunkr resolution and URL list export.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.12.1';
+  const APP_VERSION = '0.13.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -98,6 +98,12 @@
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
   const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
+  // One collator for the whole script. Passing an options object to
+  // localeCompare builds a fresh one per call, and sorting a large thread by
+  // author is tens of thousands of comparisons -- measured at 135ms for 5,000
+  // items, against 2ms for this.
+  const textCollator = new Intl.Collator(undefined, { sensitivity: 'base' });
+  const compareText = (left, right) => textCollator.compare(String(left || ''), String(right || ''));
   const SORT_LABELS = Object.freeze({
     'thread-asc': 'Oldest replies first',
     'thread-desc': 'Newest replies first',
@@ -272,7 +278,19 @@
   const savedSettings = storedSettings && typeof storedSettings === 'object' && !Array.isArray(storedSettings) ? storedSettings : {};
   const savedDownloadHistory = storedDownloadHistory && typeof storedDownloadHistory === 'object' && !Array.isArray(storedDownloadHistory) ? storedDownloadHistory : {};
 
+  // Entries this script wrote are already in shape; only pre-v0.7.3 records
+  // need rebuilding. Checking is far cheaper than allocating 5,000 fresh
+  // objects on every history write, which is what the unconditional rebuild
+  // cost -- and persistDownloadHistory reads storage on every write.
+  const isNormalizedEntry = entry => Boolean(entry)
+    && typeof entry === 'object'
+    && !Array.isArray(entry)
+    && typeof entry.verified === 'boolean'
+    && typeof entry.method === 'string'
+    && typeof entry.filename === 'string';
+
   function normalizeDownloadHistory(history) {
+    if (Object.values(history).every(isNormalizedEntry)) return history;
     return Object.fromEntries(Object.entries(history).map(([key, rawEntry]) => {
       const entry = rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry) ? rawEntry : {};
       return [key, {
@@ -627,13 +645,30 @@
     up: '<path d="m6.75 11 5.25-5.25L17.25 11"/><path d="M12 6v12.25"/>',
   };
 
+  // An icon is a pure function of its name and class, and a card mounts several.
+  // The windowed renderer remounts constantly, so this stops rebuilding
+  // identical SVG strings for the life of the page.
+  const iconCache = new Map();
+
   function icon(name, className = '') {
+    const cacheKey = `${name}\u0000${className}`;
+    let markup = iconCache.get(cacheKey);
+    if (markup !== undefined) return markup;
     const paths = ICON_PATHS[name] || ICON_PATHS.info;
-    return `<svg class="scg-icon ${escapeHtml(className)}" data-scg-icon="${escapeHtml(name)}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    markup = `<svg class="scg-icon ${escapeHtml(className)}" data-scg-icon="${escapeHtml(name)}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    iconCache.set(cacheKey, markup);
+    return markup;
   }
 
+  const iconWellCache = new Map();
+
   function iconWell(name, className = '') {
-    return `<i class="scg-icon-well ${escapeHtml(className)}" aria-hidden="true">${icon(name)}</i>`;
+    const cacheKey = `${name}\u0000${className}`;
+    let markup = iconWellCache.get(cacheKey);
+    if (markup !== undefined) return markup;
+    markup = `<i class="scg-icon-well ${escapeHtml(className)}" aria-hidden="true">${icon(name)}</i>`;
+    iconWellCache.set(cacheKey, markup);
+    return markup;
   }
 
   function setIconButton(button, iconName, label) {
@@ -906,10 +941,13 @@
     if (candidate?.status === 'confirmed' && candidate.url) return true;
     // Hosts with a resolver that runs at queue time. A failed attempt has
     // already returned above, so a dead link cannot come back through here.
-    return hasDirectResolver(item);
+    // The verdict is derived at index time; the fallback is for items that have
+    // not been through appendUniqueItems.
+    return item.directResolver === undefined ? hasDirectResolver(item) : item.directResolver;
   }
 
   function downloadHistoryKey(item) {
+    if (item && item.historyKey) return item.historyKey;
     const base = threadBaseUrl(item?.pageUrl || item?.postUrl || location.href);
     return `${base}|${item?.selectionKey || itemDedupeKey(item)}`;
   }
@@ -1358,6 +1396,15 @@
       seen.add(key);
       item.selectionKey = key;
       item.searchText = `${item.author || ''} ${item.title || ''} ${item.caption || ''} ${item.text || ''} ${item.url || ''} ${item.originalLink || ''} ${item.postNumber || ''} ${item.pageNumber || ''}`.toLowerCase();
+      // Derived once, here, because each of these parses a URL and every one of
+      // them used to be recomputed inside a per-frame or per-keystroke loop over
+      // the whole indexed set. hostDefinition alone costs four URL
+      // constructions, and hasDirectResolver reaches roughly twenty-eight.
+      // None of the three can change afterwards: they read only the item's own
+      // URLs, never its resolution state.
+      item.sourceHost = item.type === 'text' ? '' : hostOf(item.originalLink || item.url || item.postUrl);
+      item.historyKey = `${threadBaseUrl(item.pageUrl || item.postUrl || location.href)}|${key}`;
+      item.directResolver = hasDirectResolver(item);
       seedRatioFromCache(item);
       target.push(item);
     });
@@ -1368,8 +1415,10 @@
     return appendUniqueItems([], items, new Set());
   }
 
+  const HTML_ESCAPES = Object.freeze({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' });
+
   function escapeHtml(value = '') {
-    return String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+    return String(value).replace(/[&<>'"]/g, character => HTML_ESCAPES[character]);
   }
 
   function hostOf(url) {
@@ -2455,7 +2504,12 @@
   function updateSelectionUi() {
     const app = document.getElementById(APP_ID);
     if (!app) return;
-    const count = selectedMediaItems().length;
+    // Every key that enters state.selected passed isDownloadableMedia on the way
+    // in, so the size is the count. Re-deriving it walked every indexed item,
+    // which the windowed renderer was doing on every scroll frame. An item whose
+    // resolution fails after selection stays counted until the next render; the
+    // ZIP queue re-filters, so nothing downstream trusts this number.
+    const count = state.selected.size;
     app.classList.toggle('has-selection', count > 0);
     const countNode = app.querySelector('.scg-selected-count');
     const downloadButton = app.querySelector('[data-action="download-selected"]');
@@ -2534,16 +2588,27 @@
     const p = state.downloadProgress;
     const jobs = state.downloadJobs;
     const terminal = new Set(['saved', 'duplicate', 'failed', 'verification', 'skipped', 'canceled']);
-    const finished = jobs.filter(job => terminal.has(job.status)).length;
-    const average = jobs.length ? jobs.reduce((sum, job) => {
-      if (terminal.has(job.status)) return sum + 1;
-      if (job.status === 'packing') return sum + .92 + (.07 * Number(job.packProgress || 0) / 100);
-      return sum + (job.total ? Math.min(.92, job.loaded / job.total) : 0);
-    }, 0) / jobs.length : 0;
+    // One walk. This used to be four separate passes plus a filter, and a large
+    // queue runs it every 250ms.
+    let finished = 0;
+    let progressSum = 0;
+    let loaded = 0;
+    let total = 0;
+    let totalsKnown = true;
+    for (const job of jobs) {
+      loaded += Number(job.loaded || 0);
+      total += Number(job.total || 0);
+      if (terminal.has(job.status)) {
+        finished += 1;
+        progressSum += 1;
+        continue;
+      }
+      if (job.status === 'packing') progressSum += .92 + (.07 * Number(job.packProgress || 0) / 100);
+      else progressSum += job.total ? Math.min(.92, job.loaded / job.total) : 0;
+      if (!(job.total > 0 || job.status === 'queued' || job.status === 'preparing')) totalsKnown = false;
+    }
+    const average = jobs.length ? progressSum / jobs.length : 0;
     const percent = p.zipPercent > 0 ? Math.round(p.zipPercent) : Math.round(average * 100);
-    const loaded = jobs.reduce((sum, job) => sum + Number(job.loaded || 0), 0);
-    const total = jobs.reduce((sum, job) => sum + Number(job.total || 0), 0);
-    const totalsKnown = jobs.filter(job => !['skipped', 'duplicate', 'verification', 'failed', 'canceled'].includes(job.status)).every(job => job.total > 0 || job.status === 'queued' || job.status === 'preparing');
     app.classList.toggle('has-downloads', jobs.length > 0);
     app.classList.toggle('downloading', state.downloading);
     progress.classList.add('visible');
@@ -3150,7 +3215,12 @@
     notify(p.label, 6000);
   }
 
+  let countsCache = null;
+
   function counts() {
+    // Only the dataset moves these, so they are memoized like the facet lists
+    // rather than re-walked on every render.
+    if (countsCache && countsCache.revision === datasetRevision) return countsCache.value;
     const c = { all: state.items.length, image: 0, video: 0, link: 0, text: 0 };
     state.items.forEach(i => {
       if (i.type === 'image') c.image++;
@@ -3158,10 +3228,14 @@
       else if (i.type === 'link') c.link++;
       else if (i.type === 'text') c.text++;
     });
+    countsCache = { revision: datasetRevision, value: c };
     return c;
   }
 
+  // Indexed items carry this; anything else (a test fixture, an item mid-build)
+  // falls back to computing it.
   function itemSourceHost(item) {
+    if (item.sourceHost !== undefined) return item.sourceHost;
     if (item.type === 'text') return '';
     return hostOf(item.originalLink || item.url || item.postUrl);
   }
@@ -3189,7 +3263,7 @@
     const filtered = state.items.filter(item => matchesActiveFilters(item, q));
 
     const thread = (a, b) => compareThreadOrder(a, b);
-    const alpha = (left, right) => String(left || '').localeCompare(String(right || ''), undefined, { sensitivity: 'base' });
+    const alpha = compareText;
     if (state.sort === 'thread-desc') filtered.sort((a, b) => thread(b, a));
     else if (state.sort === 'author') filtered.sort((a, b) => alpha(a.author, b.author) || thread(a, b));
     else if (state.sort === 'host') filtered.sort((a, b) => alpha(itemSourceHost(a), itemSourceHost(b)) || thread(a, b));
@@ -3237,13 +3311,25 @@
   // `skip` excludes one facet from the test. Counting a facet's own values
   // against itself would report 0 for everything you did not pick, which is
   // useless; skipping it answers "how many if I picked this instead".
+  // The individual verdicts. A caller that needs the same item judged with one
+  // facet excluded can then reuse the rest rather than running the whole
+  // predicate a second time, which is what the facet counts used to do.
+  function filterParts(item, q = normalizedQuery()) {
+    return {
+      type: !state.filter || state.filter === 'all' || item.type === state.filter ||
+        (state.filter === 'video' && item.type === 'embed'),
+      author: !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter,
+      host: !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter,
+      selected: !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey)),
+      query: !q || item.searchText.includes(q),
+    };
+  }
+
   function matchesActiveFilters(item, q = normalizedQuery(), skip = '') {
-    const typeMatch = !state.filter || state.filter === 'all' || item.type === state.filter ||
-      (state.filter === 'video' && item.type === 'embed');
-    const authorMatch = skip === 'author' || !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter;
-    const hostMatch = skip === 'host' || !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter;
-    const selectedMatch = !state.selectedOnly || (isDownloadableMedia(item) && state.selected.has(item.selectionKey));
-    return typeMatch && authorMatch && hostMatch && selectedMatch && (!q || item.searchText.includes(q));
+    const parts = filterParts(item, q);
+    const authorMatch = skip === 'author' || parts.author;
+    const hostMatch = skip === 'host' || parts.host;
+    return parts.type && authorMatch && hostMatch && parts.selected && parts.query;
   }
 
   function replyDownloadableItems(key) {
@@ -3619,10 +3705,8 @@
 
   function facetOptions() {
     if (facetCache && facetCache.revision === datasetRevision) return facetCache;
-    const authors = [...new Set(state.items.map(item => item.author).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-    const hosts = [...new Set(state.items.map(itemSourceHost).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    const authors = [...new Set(state.items.map(item => item.author).filter(Boolean))].sort(compareText);
+    const hosts = [...new Set(state.items.map(itemSourceHost).filter(Boolean))].sort(compareText);
     facetCache = { revision: datasetRevision, authors, hosts };
     return facetCache;
   }
@@ -3639,10 +3723,12 @@
     const authors = new Map();
     const hosts = new Map();
     state.items.forEach(item => {
-      if (item.author && matchesActiveFilters(item, q, 'author')) {
-        authors.set(item.author, (authors.get(item.author) || 0) + 1);
-      }
-      if (matchesActiveFilters(item, q, 'host')) {
+      // One evaluation, both answers: the shared facets decide whether the item
+      // counts at all, then each list ignores only its own.
+      const parts = filterParts(item, q);
+      if (!parts.type || !parts.selected || !parts.query) return;
+      if (item.author && parts.host) authors.set(item.author, (authors.get(item.author) || 0) + 1);
+      if (parts.author) {
         const host = itemSourceHost(item);
         if (host) hosts.set(host, (hosts.get(host) || 0) + 1);
       }
@@ -3997,7 +4083,13 @@
   }
 
   function buildFlowModel(containerWidth) {
-    const entries = state.renderedItems.map(item => ({ key: item.selectionKey, ratio: itemRatio(item) }));
+    // Hoisted: itemRatio falls back to assumedRatio(), which recomputes a
+    // geometric mean per call, and this maps the entire filtered set.
+    const fallbackRatio = assumedRatio();
+    const entries = state.renderedItems.map(item => ({
+      key: item.selectionKey,
+      ratio: (item.ratio && item.ratio.value) || fallbackRatio,
+    }));
     const options = flowLayoutOptions(containerWidth);
     const packed = packColumns(entries, options);
     const byKey = new Map();
@@ -4074,6 +4166,9 @@
     const model = flow.model;
     if (!grid || !scrollArea || !model) return;
     const range = visibleRowRange(model.cells, scrollArea.scrollTop, scrollArea.clientHeight, FLOW_OVERSCAN, model.maxCellHeight);
+    // Most scroll frames do not change which cards are mounted, and everything
+    // below is wasted work when they do not.
+    if (range.start === flow.range.start && range.end === flow.range.end && flow.mounted.size) return;
     flow.range = range;
     const keep = new Set();
     for (let index = range.start; index <= range.end; index++) keep.add(model.cells[index].key);
@@ -4082,7 +4177,9 @@
       const cell = model.cells[index];
       if (!flow.mounted.has(cell.key)) mountFlowCard(grid, cell);
     }
-    updateSelectionUi();
+    // No updateSelectionUi() here. A mounted card renders its own selected state
+    // from card(), and nothing about scrolling changes the selection -- so this
+    // was walking every indexed item, once per frame, to learn nothing.
   }
 
   // Re-packing moves everything below a changed card. Anchoring on the first
@@ -4143,8 +4240,25 @@
     scheduleFlowFrame(false);
   }
 
+  // A late ratio re-packs the whole list, and during the first scroll through a
+  // thread they arrive continuously. A resize or a density change is different:
+  // the reader is waiting on that geometry, so those stay immediate. These only
+  // refine it, so they settle together.
+  const RATIO_RELAYOUT_DELAY = 150;
+  let ratioLayoutTimer = 0;
+
+  function scheduleFlowRatioLayout() {
+    if (ratioLayoutTimer || !usesWindowedRenderer()) return;
+    ratioLayoutTimer = setTimeout(() => {
+      ratioLayoutTimer = 0;
+      scheduleFlowLayout();
+    }, RATIO_RELAYOUT_DELAY);
+  }
+
   function teardownFlow() {
     if (flow.frame) cancelAnimationFrame(flow.frame);
+    if (ratioLayoutTimer) clearTimeout(ratioLayoutTimer);
+    ratioLayoutTimer = 0;
     flow.frame = 0;
     flow.pendingLayout = false;
     flow.mounted.forEach(node => releaseFlowNode(node));
@@ -5653,6 +5767,20 @@
     #${APP_ID}[data-layout="grid"] .scg-skeleton{display:flex;flex-direction:column;height:var(--scg-grid-height,386px);margin:0}
     #${APP_ID}[data-layout="grid"].compact .scg-skeleton{height:var(--scg-grid-compact-height,312px)}
     #${APP_ID}[data-layout="grid"] .scg-skeleton-media{height:auto;min-height:0;flex:1}
+
+    /* The uniform grid is the one live path the window renderer does not own:
+       it mounts every matched card, and so does reply grouping inside it. Cards
+       here already have a fixed height, so the browser can be told to skip
+       layout and paint for the ones off screen and be given the exact size to
+       reserve. Deliberately not applied under masonry: those cards sit in CSS
+       multi-column, which needs to see every box to balance the columns. */
+    #${APP_ID}[data-layout="grid"] .scg-grid:not(.flowing) .scg-card{
+      content-visibility:auto;
+      contain-intrinsic-size:auto var(--scg-grid-height,386px);
+    }
+    #${APP_ID}[data-layout="grid"].compact .scg-grid:not(.flowing) .scg-card{
+      contain-intrinsic-size:auto var(--scg-grid-compact-height,312px);
+    }
 
     #${APP_ID}[data-layout="grid"] .scg-grid.grouped{display:block;columns:auto}
 
@@ -7340,7 +7468,7 @@
     const isThumb = Boolean(item.thumb) && img.currentSrc === absoluteUrl(item.thumb);
     if (!applyMeasuredRatio(item, img.naturalWidth, img.naturalHeight, isThumb ? 'thumb' : 'measured')) return;
     img.closest('.scg-card')?.style.setProperty('--scg-ratio', String(item.ratio.value));
-    scheduleFlowLayout();
+    scheduleFlowRatioLayout();
   }, true);
   app.querySelector('.scg-lightbox').onclick = event => { if (event.target.classList.contains('scg-lightbox')) closeLightbox(); };
   document.addEventListener('keydown', event => {

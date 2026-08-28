@@ -40,7 +40,7 @@ This fork uses a **separate script identity** throughout, which is what lets bot
 |---|---|---|
 | `@name` | `SimpCity Thread Gallery` | `SimpCity Thread Gallery Timeline` |
 | `@namespace` | `local.simpcity.gallery.hybrid` | `local.simpcity.gallery.timeline` |
-| Version line | 0.9.7.x | 0.12.x |
+| Version line | 0.9.7.x | 0.13.x |
 | Settings + history | `sc-thread-gallery-*` | `sc-thread-gallery-timeline-*` |
 
 Storage is deliberately **not** shared. The fork starts with an empty download history, so items you already downloaded show as un-downloaded here until it builds its own record.

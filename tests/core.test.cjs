@@ -48,8 +48,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '0.12.1');
-  assert.match(source, /const APP_VERSION = '0\.12\.1'/);
+  assert.equal(metadataValue('version'), '0.13.0');
+  assert.match(source, /const APP_VERSION = '0\.13\.0'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -497,7 +497,7 @@ test('reply checkbox exposes native indeterminate state after rendering', () => 
   assert.match(source, /data-reply-select/);
   assert.match(source, /data-reply-selection-count/);
   assert.match(source, /iconWell\('select'\)/);
-  assert.match(source, /selectedMatch = !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
+  assert.match(source, /selected: !state\.selectedOnly \|\| \(isDownloadableMedia\(item\) && state\.selected\.has\(item\.selectionKey\)\)/);
 });
 
 test('active filters are visible and individually reversible', () => {
@@ -533,8 +533,12 @@ test('facet counts answer what each value would give, and the summary states the
   assert.match(source, /function matchesActiveFilters\(item, q = normalizedQuery\(\), skip = ''\)/);
   assert.match(source, /const authorMatch = skip === 'author' \|\|/);
   assert.match(source, /const hostMatch = skip === 'host' \|\|/);
-  assert.match(source, /matchesActiveFilters\(item, q, 'author'\)/);
-  assert.match(source, /matchesActiveFilters\(item, q, 'host'\)/);
+  // One evaluation per item feeds both lists: the shared facets decide whether
+  // it counts at all, then each list ignores only its own.
+  assert.match(source, /const parts = filterParts\(item, q\);/);
+  assert.match(source, /if \(!parts\.type \|\| !parts\.selected \|\| !parts\.query\) return;/);
+  assert.match(source, /if \(item\.author && parts\.host\)/);
+  assert.match(source, /if \(parts\.author\) \{/);
   // Counts move with every other facet, so this cache cannot key on the dataset.
   assert.match(source, /facetCountCache && facetCountCache\.signature === signature/);
   assert.match(source, /withCount\(author, counts\.authors\)/);
@@ -1583,6 +1587,79 @@ test('the pager and the size warning ask the renderer, not the layout name', () 
   assert.match(source, /use the paged renderer instead, so Per view applies again\./);
 });
 
+test('per-item URL work happens once, at index time', () => {
+  // hostDefinition costs four URL constructions and hasDirectResolver reaches
+  // roughly twenty-eight, and all of it used to run inside loops over the whole
+  // indexed set -- once per scroll frame, once per keystroke.
+  const indexBody = source.slice(
+    source.indexOf('function appendUniqueItems'),
+    source.indexOf('function dedupe'),
+  );
+  assert.match(indexBody, /item\.sourceHost = /);
+  assert.match(indexBody, /item\.historyKey = /);
+  assert.match(indexBody, /item\.directResolver = hasDirectResolver\(item\)/);
+
+  // And the readers prefer the derived value, falling back for items that never
+  // went through appendUniqueItems.
+  assert.match(source, /if \(item\.sourceHost !== undefined\) return item\.sourceHost;/);
+  assert.match(source, /if \(item && item\.historyKey\) return item\.historyKey;/);
+
+  // One collator, not one per comparison.
+  assert.match(source, /const textCollator = new Intl\.Collator\(undefined, \{ sensitivity: 'base' \}\)/);
+  assert.doesNotMatch(source, /localeCompare\([^)]*\{ sensitivity: 'base' \}\)/);
+});
+
+test('a scroll frame that changes nothing does nothing', () => {
+  const body = source.slice(
+    source.indexOf('function updateFlowWindow'),
+    source.indexOf('function relayoutFlow'),
+  );
+  // The range guard, and the scan that used to run behind it.
+  assert.match(body, /if \(range\.start === flow\.range\.start && range\.end === flow\.range\.end && flow\.mounted\.size\) return;/);
+  // Comments are stripped first: the code below says in words that the call
+  // is deliberately absent, and that sentence must not satisfy the assertion.
+  const code = body.split(String.fromCharCode(10)).filter(line => !line.trim().startsWith('//')).join(' ');
+  assert.doesNotMatch(code, /updateSelectionUi\(\)/, 'the per-frame selection scan is gone');
+
+  // The dock count is O(1) rather than a walk of every indexed item.
+  assert.match(source, /const count = state\.selected\.size;/);
+});
+
+test('ratios settle together instead of re-packing per frame', () => {
+  // A late ratio re-packs the entire list and they arrive continuously during
+  // the first scroll; a resize is different and stays immediate.
+  assert.match(source, /const RATIO_RELAYOUT_DELAY = 150;/);
+  assert.match(source, /function scheduleFlowRatioLayout\(\)/);
+  // The image load handler is the one that coalesces.
+  assert.match(source, /scg-ratio', String\(item\.ratio\.value\)\);\s*\r?\n\s*scheduleFlowRatioLayout\(\);/);
+  // The resize observer and shell state still ask for an immediate re-pack.
+  assert.match(source, /if \(grid\.clientWidth === flow\.width\) return;\s*\r?\n\s*scheduleFlowLayout\(\);/);
+  // And the timer is cleared with the rest of the renderer.
+  assert.match(source, /if \(ratioLayoutTimer\) clearTimeout\(ratioLayoutTimer\);/);
+});
+
+test('repeated string building is cached or hoisted, not rebuilt per card', () => {
+  // escapeHtml allocated a fresh map for every matched character.
+  assert.match(source, /const HTML_ESCAPES = Object\.freeze\(/);
+  assert.match(source, /replace\(\/\[&<>'"\]\/g, character => HTML_ESCAPES\[character\]\)/);
+  // Icons are pure in name and class, and a card mounts several.
+  assert.match(source, /const iconCache = new Map\(\);/);
+  assert.match(source, /const iconWellCache = new Map\(\);/);
+  // Counts move only with the dataset.
+  assert.match(source, /if \(countsCache && countsCache\.revision === datasetRevision\) return countsCache\.value;/);
+  // History entries this script wrote are already in shape.
+  assert.match(source, /if \(Object\.values\(history\)\.every\(isNormalizedEntry\)\) return history;/);
+});
+
+test('the uniform grid can skip off-screen cards, masonry cannot', () => {
+  // The grid mounts every matched card and its cards have a fixed height, so
+  // the browser can be told what to reserve. Masonry sits in CSS multi-column,
+  // which has to see every box to balance the columns.
+  assert.match(source, /\[data-layout="grid"\] \.scg-grid:not\(\.flowing\) \.scg-card\{\s*\r?\n\s*content-visibility:auto;/);
+  const masonryRules = source.match(/\[data-layout="masonry"\][^\n]*content-visibility/g);
+  assert.equal(masonryRules, null, 'multi-column balancing must not be given content-visibility');
+});
+
 test('nothing the reader can see names a layout that was deleted', () => {
   // 0.12.0 removed Flow, Timeline and Feed but left three strings advertising
   // them: the All clamp toast, the Per view warning and the Appearance copy.
@@ -2051,7 +2128,7 @@ test('a card plays in place whenever anything can play it, not only an iframe', 
   assert.doesNotMatch(source, /const transformed = embedUrl\(item\.url\);/);
   // One definition of "there is a resolver for this", shared with the queue.
   assert.match(source, /function hasDirectResolver\(item\)/);
-  assert.match(source, /\/\/ already returned above, so a dead link cannot come back through here\.\s*\r?\n\s*return hasDirectResolver\(item\);/);
+  assert.match(source, /return item\.directResolver === undefined \? hasDirectResolver\(item\) : item\.directResolver;/);
 });
 
 test('an embed plays its resolved file where one exists, and falls back honestly where it does not', () => {
