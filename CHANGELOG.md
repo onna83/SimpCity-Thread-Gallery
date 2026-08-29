@@ -2,6 +2,17 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 1.0.0 (timeline fork — unreleased)
+
+Completes Phase 4 of the timeline plan: host folders become first-class, on-demand containers, and a bounded item index makes revisiting large threads immediate.
+
+- **Added explicit container cards.** Bunkr `/a/` albums, Pixeldrain `/l/` lists, and Gofile `/d/` folders are indexed as folders rather than fake media. They are not selectable or downloadable until expanded, and expansion never runs during thread indexing.
+- **Added on-demand expansion.** Bunkr album HTML, Pixeldrain's list API, and Gofile's contents API produce ordinary child image, video, folder, or link cards through the existing deduplication path. Gofile's bearer token is requested only when its public read fails, remains in the current tab, and is stripped from persistence.
+- **Kept child identity independent from its parent.** Bunkr and Pixeldrain file IDs and Gofile content IDs drive deduplication, selection, and verified download history, so the same file linked directly and discovered inside a folder does not become two downloads. The parent folder URL remains searchable provenance and is included in `manifest.csv`.
+- **Added a bounded per-thread item index.** A schema- and extraction-versioned cache restores recent thread items and expanded folder children from userscript storage. It invalidates when the ignore list or extraction contract changes, retains a valid cached view when the thread grows, and preserves the previous view if a replacement scan fails before indexing a page.
+- **Bounded storage deliberately.** Each cached thread uses at most about 420 KB and only the six newest thread indexes remain. Expanded folders are prioritized, followed by media, links, and text; the gallery reports when truncation occurs.
+- Added regression coverage for container recognition, non-selectable folder semantics, stable child provenance, token privacy, cache schema/invalidation, storage limits, and restoration wiring.
+
 ## 0.15.0 (timeline fork — unreleased)
 
 Substantial browsing and workflow features from Phase 3 of the timeline plan.

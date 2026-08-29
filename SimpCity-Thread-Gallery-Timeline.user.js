@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      0.15.0
-// @description  Timeline fork of SimpCity Thread Gallery: virtualized media browsing, resumable scans, host resolution, selection and verified downloads.
+// @version      1.0.0
+// @description  Timeline fork of SimpCity Thread Gallery: cached thread indexes, on-demand host folders, virtualized browsing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
 // @grant        GM_xmlhttpRequest
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '0.15.0';
+  const APP_VERSION = '1.0.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -31,6 +31,12 @@
   const RATIO_CACHE_KEY = 'sc-thread-gallery-timeline-ratio-cache-v1';
   const SCAN_PROGRESS_KEY = 'sc-thread-gallery-timeline-scan-progress-v1';
   const SELECTIONS_KEY = 'sc-thread-gallery-timeline-selections-v1';
+  const ITEM_INDEX_KEY_PREFIX = 'sc-thread-gallery-timeline-item-index-v1:';
+  const ITEM_INDEX_REGISTRY_KEY = 'sc-thread-gallery-timeline-item-index-registry-v1';
+  const ITEM_INDEX_SCHEMA = 1;
+  const ITEM_INDEX_EXTRACTION_VERSION = 'containers-v1';
+  const ITEM_INDEX_MAX_BYTES = 420000;
+  const ITEM_INDEX_THREAD_LIMIT = 6;
   const TAB_SYNC_CHANNEL = 'sc-thread-gallery-timeline-sync-v1';
   const RATIO_CACHE_LIMIT = 4000;
   const DEFAULT_RATIO = 0.72;
@@ -104,7 +110,7 @@
     .join('');
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
-  const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
+  const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', container: 'Folders', link: 'Links', text: 'Text' });
   // The gallery already knows what has been downloaded and paints a badge for
   // it. On a second visit to a long thread that badge is the wrong shape of
   // answer: what you want is the set that still needs doing.
@@ -331,7 +337,7 @@
 
   const state = {
     items: [],
-    filter: ['all', 'image', 'video', 'link', 'text'].includes(savedSettings.filter) ? savedSettings.filter : 'all',
+    filter: ['all', 'image', 'video', 'container', 'link', 'text'].includes(savedSettings.filter) ? savedSettings.filter : 'all',
     downloadState: DOWNLOAD_STATES.includes(savedSettings.downloadState) ? savedSettings.downloadState : 'all',
     resolutionFilter: RESOLUTION_FILTERS.includes(savedSettings.resolutionFilter) ? savedSettings.resolutionFilter : 'all',
     query: '',
@@ -385,6 +391,10 @@
     scanFailedPages: 0,
     scanCanceling: false,
     scanController: null,
+    containerExpansions: new Map(),
+    gofileToken: '',
+    itemIndexRestored: false,
+    itemIndexTruncated: false,
     sourceLabel: 'Current page',
     lightboxIndex: 0,
     viewerItems: [],
@@ -638,8 +648,9 @@
   const IMAGE_EXT = /\.(?:jpe?g|png|gif|webp|avif|bmp)(?:$|[?#./])/i;
   const IMAGE_EXT_BARE = /^(?:jpe?g|png|gif|webp|avif|bmp)$/i;
   const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v)(?:$|[?#./])/i;
+  const AUDIO_EXT = /\.(?:mp3|m4a|aac|ogg|opus|wav|flac)(?:$|[?#./])/i;
   const IGNORE_IMG = /(?:avatar|smilie|emoji|reaction|sprite|logo)/i;
-  const TYPE_ORDER = { image: 0, video: 1, embed: 1, link: 2, text: 3 };
+  const TYPE_ORDER = { container: -1, image: 0, video: 1, embed: 1, link: 2, text: 3 };
   const ICON_PATHS = {
     gallery: '<rect x="3.25" y="6.75" width="14" height="12.5" rx="2.5"/><path d="M7.25 6.75V5.5a2.25 2.25 0 0 1 2.25-2.25h8A2.25 2.25 0 0 1 19.75 5.5v8.25a2.25 2.25 0 0 1-1.5 2.12"/><circle cx="7.9" cy="11" r="1.15"/><path d="m3.6 17.9 3.9-3.6a1.4 1.4 0 0 1 1.9 0l2 1.9 2.2-2a1.4 1.4 0 0 1 1.9 0l1.75 1.6"/>',
     settings: '<path d="M9.74 6.12 10.24 2.97 13.76 2.97 14.26 6.12 15.96 7.1 18.94 5.96 20.7 9 18.22 11.01 18.22 12.99 20.7 15 18.94 18.04 15.96 16.9 14.26 17.88 13.76 21.03 10.24 21.03 9.74 17.88 8.04 16.9 5.06 18.04 3.3 15 5.78 12.99 5.78 11.01 3.3 9 5.06 5.96 8.04 7.1Z"/><circle cx="12" cy="12" r="2.8"/>',
@@ -671,6 +682,7 @@
     text: '<path d="M4.75 6.25V4.75h14.5v1.5M12 4.75v14.5M9 19.25h6"/>',
     page: '<path d="M6 3.75h7.5l4.5 4.5v12a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V5.25A1.5 1.5 0 0 1 6 3.75Z"/><path d="M13.5 3.75v4.5H18M8.25 13h7.5M8.25 16.5h5.25"/>',
     archive: '<rect x="3.25" y="7.75" width="17.5" height="12.5" rx="2.25"/><path d="M3.25 11.5h17.5"/><path d="M5.75 7.75V5.5a1.5 1.5 0 0 1 1.5-1.5h9.5a1.5 1.5 0 0 1 1.5 1.5v2.25"/><path d="M10 15.25h4"/>',
+    folder: '<path d="M3.5 7.25h6l1.8 2h9.2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/><path d="M3.5 7.25V6a2 2 0 0 1 2-2h3.2l1.8 2h8a2 2 0 0 1 2 2v1.25"/>',
     history: '<path d="M3.75 12a8.25 8.25 0 1 0 2.42-5.83L3.75 8.5"/><path d="M3.75 3.75V8.5h4.75"/><path d="M12 7.75V12l2.9 1.75"/>',
     clear: '<rect x="3.75" y="3.75" width="16.5" height="16.5" rx="4" stroke-dasharray="3.2 2.4"/><path d="m9.25 9.25 5.5 5.5m0-5.5-5.5 5.5"/>',
     check: '<circle cx="12" cy="12" r="8.5"/><path d="m8.25 12.2 2.7 2.7 4.8-5.8"/>',
@@ -972,8 +984,8 @@
       mediaId: url => url.pathname.match(/^\/f\/([^/?#]+)/i)?.[1] || '',
     }),
     Object.freeze({
-      // A /u/ URL is one stable file. Pixeldrain /l/ lists deliberately stay
-      // with the generic host until container expansion lands in Phase 4.
+      // A /u/ URL is one stable file. /l/ list URLs are represented separately
+      // as containers and are only read when the reader expands them.
       id: 'pixeldrain', media: 'video',
       matches: host => /(?:^|\.)pixeldrain\.com$/i.test(host),
       mediaId: url => url.pathname.match(/^\/u\/([^/?#]+)/i)?.[1] || '',
@@ -1015,6 +1027,28 @@
     return { status: 'heuristic', url: thumb, method: 'thumbnail' };
   }
 
+  function containerDescriptor(rawUrl) {
+    try {
+      const normalized = normalizeSourceUrl(rawUrl);
+      const url = new URL(normalized);
+      const host = url.hostname.replace(/^www\./, '').toLowerCase();
+      const bunkr = /(?:^|\.)bunkr+\.[a-z]{2,6}$/i.test(host) && url.pathname.match(/^\/a\/([^/?#]+)/i);
+      const pixeldrain = /(?:^|\.)pixeldrain\.com$/i.test(host) && url.pathname.match(/^\/l\/([^/?#]+)/i);
+      const gofile = /(?:^|\.)gofile\.io$/i.test(host) && url.pathname.match(/^\/d\/([^/?#]+)/i);
+      const match = bunkr || pixeldrain || gofile;
+      if (!match) return null;
+      url.search = '';
+      url.hash = '';
+      return {
+        provider: bunkr ? 'bunkr' : (pixeldrain ? 'pixeldrain' : 'gofile'),
+        id: decodeURIComponent(match[1]),
+        url: url.href.replace(/\/$/, ''),
+      };
+    } catch { return null; }
+  }
+
+  const isContainerUrl = rawUrl => Boolean(containerDescriptor(rawUrl));
+
   const isMediaItem = item => item?.type === 'image' || item?.type === 'video' || item?.type === 'embed';
 
   // A single Bunkr file has a resolver that runs at queue time, so it counts as
@@ -1026,6 +1060,7 @@
 
   function hasDirectResolver(item) {
     if (!item) return false;
+    if (item.gofileFileId && item.containerId) return true;
     return hostDefinition(item.url)?.id === 'turbo' || isBunkrFileUrl(item.url) || isBunkrFileUrl(item.originalLink) ||
       isPixeldrainFileUrl(item.url) || isPixeldrainFileUrl(item.originalLink);
   }
@@ -1051,7 +1086,13 @@
   }
 
   function downloadHistoryEntry(item) {
-    return item ? state.downloadHistory[downloadHistoryKey(item)] || null : null;
+    if (!item) return null;
+    const primary = state.downloadHistory[downloadHistoryKey(item)];
+    if (primary) return primary;
+    for (const alias of item.historyAliases || []) {
+      if (state.downloadHistory[alias]) return state.downloadHistory[alias];
+    }
+    return null;
   }
 
   function wasDownloaded(item) {
@@ -1386,7 +1427,7 @@
   function itemIsBlocked(item, patterns) {
     if (!item || !patterns || !patterns.length) return false;
     if (item.type === 'text') return false;
-    return matchesBlockPattern([item.url, item.thumb, item.originalLink], patterns);
+    return matchesBlockPattern([item.url, item.thumb, item.originalLink, item.containerUrl], patterns);
   }
 
   function extractFromDocument(doc, pageUrl, blockPatterns = blockPatternList(state.blockPatterns)) {
@@ -1416,12 +1457,32 @@
       // do not consume a number, so the sequence stays dense.
       let mediaIndex = 0;
 
+      // Container links are intentionally indexed before thumbnails. A linked
+      // album cover is the folder's preview, not a downloadable image, and
+      // treating it as one creates a fake media card for the album page.
+      content.querySelectorAll('a[href]').forEach(anchor => {
+        const descriptor = containerDescriptor(anchor.getAttribute('href') ? normalizeSourceUrl(anchor.getAttribute('href'), base) : '');
+        if (!descriptor) return;
+        const image = anchor.querySelector('img');
+        const label = (anchor.textContent || image?.getAttribute('alt') || image?.getAttribute('title') || `${descriptor.provider} folder`).replace(/\s+/g, ' ').trim();
+        results.push({
+          type: 'container', url: descriptor.url, title: label,
+          thumb: image ? bestImageUrl(image, base) : '',
+          containerProvider: descriptor.provider,
+          containerId: descriptor.id,
+          containerStatus: 'idle',
+          containerFileCount: 0,
+          mediaIndex: mediaIndex++, ...common,
+        });
+      });
+
       content.querySelectorAll('img').forEach(img => {
         const linked = img.closest('a[href]');
         const classes = `${img.className || ''} ${linked?.className || ''}`;
         if (IGNORE_IMG.test(classes)) return;
         const thumb = bestImageUrl(img, base);
         const originalLink = normalizeSourceUrl(linked?.getAttribute('href'), base);
+        if (isContainerUrl(originalLink)) return;
         const lightboxHint = /(?:js-lbImage|lbContainer|attachment)/i.test(classes) ||
           /lightbox/i.test(linked?.getAttribute('data-xf-init') || '');
         const linkedDirect = Boolean(originalLink && !isImagePageHost(originalLink) &&
@@ -1469,7 +1530,7 @@
 
       content.querySelectorAll('a[href]').forEach(anchor => {
         const href = normalizeSourceUrl(anchor.getAttribute('href'), base);
-        if (!href || anchor.querySelector('img')) return;
+        if (!href || anchor.querySelector('img') || isContainerUrl(href)) return;
         if (/\/threads\/|\/posts\/|#post-|\/members\//i.test(href)) return;
         const label = (anchor.textContent || href).replace(/\s+/g, ' ').trim();
         if (VIDEO_EXT.test(href) || isKnownVideoHost(href)) {
@@ -1501,26 +1562,67 @@
     const survivors = new Set(kept.map(item => item.selectionKey));
     state.selected.forEach(key => { if (!survivors.has(key)) state.selected.delete(key); });
     state.items = kept;
+    state.containerExpansions.forEach((expansion, key) => {
+      if (!survivors.has(key)) {
+        state.containerExpansions.delete(key);
+        return;
+      }
+      expansion.children = expansion.children.filter(item => !itemIsBlocked(item, patterns));
+    });
     invalidateVisibleItems({ dataset: true, selection: true });
     return removed;
   }
 
-  function itemDedupeKey(item) {
+  const normalizedDedupeUrl = rawUrl => rawUrl
+    ? rawUrl.replace(/([?&])width=\d+|([?&])height=\d+/g, '$1').replace(/[?&]$/, '')
+    : '';
+
+  function legacyItemDedupeKey(item) {
     const rawUrl = item.type === 'embed' ? embedUrl(item.url) : item.url;
-    const normalizedUrl = rawUrl ? rawUrl.replace(/([?&])width=\d+|([?&])height=\d+/g, '$1').replace(/[?&]$/, '') : '';
+    const normalizedUrl = normalizedDedupeUrl(rawUrl);
+    return item.type === 'text'
+      ? `text|${item.postId}|${item.text.slice(0, 300)}`
+      : `${item.type === 'embed' ? 'videoish' : item.type}|${normalizedUrl}`;
+  }
+
+  function itemDedupeAliases(item, primaryKey) {
+    const aliases = new Set([legacyItemDedupeKey(item)]);
+    const identityUrl = item.identityUrl || item.originalLink || item.url;
+    if (/^(?:bunkr|pixeldrain)\|/.test(primaryKey)) {
+      aliases.add(`videoish|${normalizedDedupeUrl(embedUrl(identityUrl))}`);
+    }
+    aliases.delete(primaryKey);
+    return [...aliases].filter(Boolean);
+  }
+
+  function itemDedupeKey(item) {
+    if (item.type === 'container') {
+      const descriptor = containerDescriptor(item.url);
+      return `container|${descriptor?.provider || item.containerProvider || 'unknown'}|${descriptor?.id || item.containerId || item.url}`;
+    }
+    if (item.gofileFileId) return `gofile|${item.gofileFileId}`;
+    const identityUrl = item.identityUrl || item.originalLink || item.url;
+    const definition = hostDefinition(identityUrl);
+    const mediaId = hostMediaId(identityUrl);
+    if (mediaId && (definition?.id === 'bunkr' || definition?.id === 'pixeldrain')) return `${definition.id}|${mediaId}`;
+    const rawUrl = item.type === 'embed' ? embedUrl(item.url) : item.url;
+    const normalizedUrl = normalizedDedupeUrl(rawUrl);
     return item.type === 'text'
       ? `text|${item.postId}|${item.text.slice(0, 300)}`
       : `${item.type === 'embed' ? 'videoish' : item.type}|${normalizedUrl}`;
   }
 
   function appendUniqueItems(target, additions, seen = new Set(target.map(itemDedupeKey))) {
-    additions.forEach(item => {
+    const queue = [...additions];
+    for (let cursor = 0; cursor < queue.length; cursor++) {
+      const item = queue[cursor];
       const key = itemDedupeKey(item);
-      if (seen.has(key)) return;
+      if (seen.has(key)) continue;
       seen.add(key);
       item.selectionKey = key;
-      if (persistedSelectionKeys.has(key)) state.selected.add(key);
-      item.searchText = `${item.author || ''} ${item.title || ''} ${item.caption || ''} ${item.text || ''} ${item.url || ''} ${item.originalLink || ''} ${item.postNumber || ''} ${item.pageNumber || ''}`.toLowerCase();
+      const aliases = itemDedupeAliases(item, key);
+      if (persistedSelectionKeys.has(key) || aliases.some(alias => persistedSelectionKeys.has(alias))) state.selected.add(key);
+      item.searchText = `${item.author || ''} ${item.title || ''} ${item.caption || ''} ${item.text || ''} ${item.url || ''} ${item.originalLink || ''} ${item.containerTitle || ''} ${item.containerUrl || ''} ${item.postNumber || ''} ${item.pageNumber || ''}`.toLowerCase();
       // Derived once, here, because each of these parses a URL and every one of
       // them used to be recomputed inside a per-frame or per-keystroke loop over
       // the whole indexed set. hostDefinition alone costs four URL
@@ -1528,16 +1630,179 @@
       // None of the three can change afterwards: they read only the item's own
       // URLs, never its resolution state.
       item.sourceHost = item.type === 'text' ? '' : hostOf(item.originalLink || item.url || item.postUrl);
-      item.historyKey = `${threadBaseUrl(item.pageUrl || item.postUrl || location.href)}|${key}`;
+      const historyBase = threadBaseUrl(item.pageUrl || item.postUrl || location.href);
+      item.historyKey = `${historyBase}|${key}`;
+      item.historyAliases = aliases.map(alias => `${historyBase}|${alias}`);
       item.directResolver = hasDirectResolver(item);
       seedRatioFromCache(item);
       target.push(item);
-    });
+      if (item.type === 'container') {
+        const expansion = state.containerExpansions.get(key);
+        if (expansion) {
+          item.containerStatus = 'expanded';
+          item.containerFileCount = Math.max(Number(expansion.fileCount || 0), expansion.children.length);
+          item.containerTitle = expansion.title || item.containerTitle || item.title;
+          expansion.children.forEach(child => queue.push({ ...child, containerParentKey: key }));
+        } else item.containerStatus = 'idle';
+      }
+    }
     return target;
   }
 
   function dedupe(items) {
     return appendUniqueItems([], items, new Set());
+  }
+
+  function stableTextHash(value) {
+    let hash = 2166136261;
+    for (const character of String(value || '')) {
+      hash ^= character.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function itemIndexIgnoreSignature(rawPatterns = state.blockPatterns) {
+    return stableTextHash(blockPatternList(rawPatterns).sort().join('\n'));
+  }
+
+  function itemIndexStorageKey(rawUrl = location.href) {
+    const identity = threadIdentity(rawUrl);
+    return `${ITEM_INDEX_KEY_PREFIX}${identity.id || stableTextHash(threadBaseUrl(rawUrl))}`;
+  }
+
+  const INDEX_ITEM_FIELDS = Object.freeze([
+    'type', 'url', 'thumb', 'originalLink', 'identityUrl', 'poster', 'title', 'caption', 'text', 'wasFrame', 'lightboxHint',
+    'mediaKey', 'dimHint', 'mediaDimensions', 'author', 'postUrl', 'postId', 'postNumber', 'postedAt', 'pageUrl', 'pageNumber',
+    'postIndex', 'mediaIndex', 'containerUrl', 'containerTitle', 'containerProvider', 'containerId', 'containerParentKey',
+    'containerFileCount', 'gofileFileId',
+  ]);
+
+  function indexableResolution(item) {
+    if (item?.gofileFileId) return {};
+    const candidate = item?.resolution?.candidate;
+    if (!candidate || candidate.expiresAt) return {};
+    const kept = {};
+    ['status', 'url', 'method', 'mediaType', 'reason', 'fallbackUrl', 'mediaTypeUnknown'].forEach(key => {
+      if (candidate[key] !== undefined) kept[key] = candidate[key];
+    });
+    return Object.keys(kept).length ? { candidate: kept } : {};
+  }
+
+  function indexableItem(item) {
+    const kept = {};
+    INDEX_ITEM_FIELDS.forEach(key => {
+      const value = item?.[key];
+      if (value !== undefined && value !== '' && value !== false && value !== 0) kept[key] = value;
+    });
+    const resolution = indexableResolution(item);
+    if (Object.keys(resolution).length) kept.resolution = resolution;
+    return kept;
+  }
+
+  const jsonBytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+  function boundedItemIndexEntry(items, expansions, metadata = {}) {
+    const entry = {
+      schema: ITEM_INDEX_SCHEMA,
+      extractionVersion: ITEM_INDEX_EXTRACTION_VERSION,
+      ignoreSignature: itemIndexIgnoreSignature(),
+      savedAt: Date.now(),
+      threadPageCount: Math.max(1, Number(metadata.threadPageCount || 1)),
+      highestScannedPage: Math.max(0, Number(metadata.highestScannedPage || 0)),
+      sourceLabel: String(metadata.sourceLabel || 'Cached index').slice(0, 120),
+      truncated: false,
+      containers: [],
+      items: [],
+    };
+    let used = jsonBytes(entry);
+    const expansionRows = [...expansions.entries()]
+      .sort((left, right) => Number(right[1]?.expandedAt || 0) - Number(left[1]?.expandedAt || 0));
+    expansionRows.forEach(([key, expansion]) => {
+      const children = (expansion?.children || []).map(indexableItem);
+      const row = {
+        key,
+        title: String(expansion?.title || '').slice(0, 240),
+        fileCount: Math.max(0, Number(expansion?.fileCount || 0)),
+        expandedAt: Math.max(0, Number(expansion?.expandedAt || 0)),
+        children,
+      };
+      const rowCost = jsonBytes(row) + 1;
+      if (used + rowCost <= ITEM_INDEX_MAX_BYTES * 0.52) {
+        entry.containers.push(row);
+        used += rowCost;
+      } else entry.truncated = true;
+    });
+
+    // Expanded children are represented by their parent's cache above. Saving
+    // them again in the flat item array halves the useful capacity for no gain.
+    const candidates = items.filter(item => !item.containerParentKey).map((item, order) => ({ item, order }));
+    const rank = item => item.type === 'container' ? 0 : (isMediaItem(item) ? 1 : (item.type === 'link' ? 2 : 3));
+    candidates.sort((a, b) => rank(a.item) - rank(b.item) || b.order - a.order);
+    for (const candidate of candidates) {
+      const saved = indexableItem(candidate.item);
+      const cost = jsonBytes(saved) + 1;
+      if (used + cost > ITEM_INDEX_MAX_BYTES) { entry.truncated = true; continue; }
+      entry.items.push(saved);
+      used += cost;
+    }
+    return entry;
+  }
+
+  function persistItemIndex() {
+    try {
+      const key = itemIndexStorageKey();
+      const entry = boundedItemIndexEntry(state.items, state.containerExpansions, {
+        threadPageCount: state.threadPageCount,
+        highestScannedPage: highestScannedPage(),
+        sourceLabel: state.sourceLabel,
+      });
+      storage.set(key, entry);
+      state.itemIndexTruncated = entry.truncated;
+      const stored = storage.get(ITEM_INDEX_REGISTRY_KEY, []);
+      const registry = (Array.isArray(stored) ? stored : [])
+        .filter(row => row && row.key !== key)
+        .concat({ key, savedAt: entry.savedAt })
+        .sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
+      registry.slice(ITEM_INDEX_THREAD_LIMIT).forEach(row => storage.remove(row.key));
+      storage.set(ITEM_INDEX_REGISTRY_KEY, registry.slice(0, ITEM_INDEX_THREAD_LIMIT));
+      return true;
+    } catch { return false; }
+  }
+
+  function validItemIndexEntry(entry) {
+    return Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)
+      && entry.schema === ITEM_INDEX_SCHEMA
+      && entry.extractionVersion === ITEM_INDEX_EXTRACTION_VERSION
+      && entry.ignoreSignature === itemIndexIgnoreSignature()
+      && Array.isArray(entry.items)
+      && Array.isArray(entry.containers));
+  }
+
+  function restoreItemIndex() {
+    const entry = storage.get(itemIndexStorageKey(), null);
+    if (!validItemIndexEntry(entry)) {
+      if (entry) storage.remove(itemIndexStorageKey());
+      return false;
+    }
+    state.containerExpansions = new Map(entry.containers.map(row => [String(row.key || ''), {
+      title: String(row.title || ''),
+      fileCount: Math.max(0, Number(row.fileCount || 0)),
+      expandedAt: Math.max(0, Number(row.expandedAt || 0)),
+      children: Array.isArray(row.children) ? row.children : [],
+    }]).filter(([key]) => key));
+    state.items = appendUniqueItems([], entry.items, new Set());
+    state.itemIndexRestored = state.items.length > 0;
+    state.itemIndexTruncated = entry.truncated === true;
+    state.threadPageCount = Math.max(state.threadPageCount, Number(entry.threadPageCount || 1));
+    state.scannedPages = Math.max(0, Number(entry.highestScannedPage || 0));
+    const currentPages = detectThreadPageCount(document, location.href);
+    state.threadPageCount = Math.max(state.threadPageCount, currentPages);
+    state.sourceLabel = currentPages > Number(entry.threadPageCount || 1)
+      ? `Cached index · ${currentPages - Number(entry.threadPageCount || 1)} new page${currentPages - Number(entry.threadPageCount || 1) === 1 ? '' : 's'} available`
+      : 'Cached thread index';
+    invalidateVisibleItems({ dataset: true, selection: true });
+    return state.itemIndexRestored;
   }
 
   const HTML_ESCAPES = Object.freeze({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' });
@@ -1582,6 +1847,195 @@
         ontimeout: () => reject(new Error('Media host request timed out')),
       });
     });
+  }
+
+  function inferredFileType(name = '', mime = '', url = '') {
+    const probe = `${name} ${url}`;
+    if (/^image\//i.test(mime) || IMAGE_EXT.test(probe)) return 'image';
+    if (/^video\//i.test(mime) || VIDEO_EXT.test(probe)) return 'video';
+    if (/^audio\//i.test(mime) || AUDIO_EXT.test(probe)) return 'link';
+    return 'unknown';
+  }
+
+  function containerChildBase(container, index) {
+    return {
+      author: container.author,
+      postUrl: container.postUrl,
+      postId: container.postId,
+      postNumber: container.postNumber,
+      postedAt: container.postedAt,
+      pageUrl: container.pageUrl,
+      pageNumber: container.pageNumber,
+      postIndex: container.postIndex,
+      mediaIndex: Number(container.mediaIndex || 0) + ((index + 1) / 1000),
+      containerUrl: container.url,
+      containerTitle: container.containerTitle || container.title || `${container.containerProvider} folder`,
+      containerProvider: container.containerProvider,
+      containerId: container.containerId,
+      containerParentKey: container.selectionKey,
+    };
+  }
+
+  function bunkrContainerChildren(container, html) {
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    const seen = new Set();
+    const children = [];
+    doc.querySelectorAll('a[href]').forEach(anchor => {
+      const filePage = normalizeSourceUrl(anchor.getAttribute('href'), container.url);
+      if (!isBunkrFileUrl(filePage) || seen.has(filePage)) return;
+      seen.add(filePage);
+      const image = anchor.querySelector('img');
+      const thumb = image ? bestImageUrl(image, container.url) : '';
+      const name = (anchor.getAttribute('title') || image?.getAttribute('alt') || anchor.querySelector('p,span')?.textContent || hostMediaId(filePage)).replace(/\s+/g, ' ').trim();
+      const inferred = inferredFileType(name, '', filePage);
+      const base = containerChildBase(container, children.length);
+      if (inferred === 'image') {
+        children.push({
+          ...base, type: 'image', url: thumb || filePage, thumb, originalLink: filePage, identityUrl: filePage,
+          caption: name, title: name, resolution: thumb ? { candidate: { ...imagePreviewCandidate(thumb, filePage), mediaType: 'image' } } : {},
+        });
+      } else {
+        children.push({ ...base, type: 'embed', url: filePage, identityUrl: filePage, title: name || 'Bunkr file' });
+      }
+    });
+    const title = (doc.querySelector('h1, [class*="title"]')?.textContent || container.title || 'Bunkr folder').replace(/\s+/g, ' ').trim();
+    return { title, fileCount: children.length, children };
+  }
+
+  function pixeldrainContainerChildren(container, rawPayload) {
+    const payload = typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload;
+    if (!payload || payload.success === false) throw new Error(payload?.message || 'Pixeldrain list response was not successful');
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    const children = files.map((file, index) => {
+      const id = String(file?.id || '');
+      const name = String(file?.name || id || `file-${index + 1}`);
+      const mime = String(file?.mime_type || file?.mime || '');
+      const filePage = `https://pixeldrain.com/u/${encodeURIComponent(id)}`;
+      const thumb = absoluteUrl(file?.thumbnail_href || (id ? `/api/file/${encodeURIComponent(id)}/thumbnail` : ''), 'https://pixeldrain.com');
+      const inferred = inferredFileType(name, mime, filePage);
+      const base = containerChildBase(container, index);
+      if (inferred === 'image') return {
+        ...base, type: 'image', url: thumb || filePage, thumb, originalLink: filePage, identityUrl: filePage,
+        caption: name, title: name, resolution: {},
+      };
+      if (inferred === 'video') return { ...base, type: 'embed', url: filePage, identityUrl: filePage, title: name };
+      return { ...base, type: 'link', url: filePage, identityUrl: filePage, title: name };
+    }).filter(child => child.identityUrl && !/\/u\/$/.test(child.identityUrl));
+    return {
+      title: String(payload.title || container.title || 'Pixeldrain list'),
+      fileCount: Math.max(Number(payload.file_count || 0), children.length),
+      children,
+    };
+  }
+
+  async function requestGofileContents(contentId, { promptForToken = true } = {}) {
+    const url = `https://api.gofile.io/contents/${encodeURIComponent(contentId)}?page=1&pageSize=1000`;
+    const attempt = token => requestText(url, {
+      headers: token ? { Accept: 'application/json', Authorization: `Bearer ${token}` } : { Accept: 'application/json' },
+    });
+    let raw;
+    try { raw = await attempt(state.gofileToken); }
+    catch (firstError) {
+      if (!promptForToken || typeof window.prompt !== 'function' || !/HTTP (?:401|403)/.test(String(firstError?.message || ''))) throw firstError;
+      const token = String(window.prompt('Gofile now requires an API token to list folders. Paste your Gofile account token; it is kept only in this tab and is never saved.', state.gofileToken || '') || '').trim();
+      if (!token) throw new Error('Gofile expansion needs an API token');
+      state.gofileToken = token;
+      raw = await attempt(token);
+    }
+    const payload = JSON.parse(raw);
+    if (!payload || payload.status === 'error') throw new Error(payload?.message || 'Gofile returned an error');
+    return payload;
+  }
+
+  function gofileChildRecords(payload) {
+    const data = payload?.data || payload || {};
+    const raw = data.children || data.contents || data.items || [];
+    return Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []);
+  }
+
+  function gofileContainerChildren(container, payload) {
+    const data = payload?.data || payload || {};
+    const records = gofileChildRecords(payload);
+    const children = records.map((file, index) => {
+      const id = String(file?.id || file?.contentId || '');
+      const name = String(file?.name || id || `file-${index + 1}`);
+      const kind = String(file?.type || file?.kind || '').toLowerCase();
+      const base = containerChildBase(container, index);
+      if (kind === 'folder') return {
+        ...base, type: 'container', url: `https://gofile.io/d/${encodeURIComponent(id)}`, title: name,
+        containerProvider: 'gofile', containerId: id, containerStatus: 'idle', containerFileCount: Number(file?.childrenCount || 0),
+      };
+      const mime = String(file?.mimetype || file?.mime || file?.mimeType || '');
+      const direct = absoluteUrl(file?.link || file?.downloadUrl || file?.url || '');
+      const thumb = absoluteUrl(file?.thumbnail || file?.thumbnailUrl || '');
+      const inferred = inferredFileType(name, mime, direct);
+      const resolution = direct ? { candidate: resolutionResult('confirmed', direct, 'gofile-folder-api', inferred === 'image' ? 'image' : 'video', {
+        headers: state.gofileToken ? { Authorization: `Bearer ${state.gofileToken}` } : {},
+        mediaTypeUnknown: inferred === 'unknown',
+      }) } : {};
+      if (inferred === 'image') return {
+        ...base, type: 'image', url: thumb || direct, thumb, originalLink: direct, identityUrl: direct,
+        caption: name, title: name, gofileFileId: id, resolution,
+      };
+      if (inferred === 'video' || inferred === 'unknown') return {
+        ...base, type: 'embed', url: direct || container.url, originalLink: direct, identityUrl: direct,
+        title: name, gofileFileId: id, resolution,
+      };
+      return { ...base, type: 'link', url: direct || container.url, identityUrl: direct, title: name, gofileFileId: id };
+    }).filter(child => child.type === 'container' ? child.containerId : child.gofileFileId);
+    return {
+      title: String(data.name || data.title || container.title || 'Gofile folder'),
+      fileCount: Math.max(Number(data.totalCount || data.childrenCount || 0), children.length),
+      children,
+    };
+  }
+
+  async function loadContainerChildren(container) {
+    if (container.containerProvider === 'bunkr') {
+      return bunkrContainerChildren(container, await requestText(container.url, { headers: { Accept: 'text/html,*/*', Referer: container.postUrl || location.href } }));
+    }
+    if (container.containerProvider === 'pixeldrain') {
+      return pixeldrainContainerChildren(container, await requestText(`https://pixeldrain.com/api/list/${encodeURIComponent(container.containerId)}`, { headers: { Accept: 'application/json' } }));
+    }
+    if (container.containerProvider === 'gofile') {
+      return gofileContainerChildren(container, await requestGofileContents(container.containerId));
+    }
+    throw new Error('This folder host is not supported');
+  }
+
+  async function expandContainer(container) {
+    if (!container || container.type !== 'container' || container.containerStatus === 'loading') return;
+    if (container.containerStatus === 'expanded') return notify('This folder is already expanded.');
+    container.containerStatus = 'loading';
+    delete container.containerError;
+    render();
+    try {
+      const expansion = await loadContainerChildren(container);
+      const patterns = blockPatternList(state.blockPatterns);
+      const children = expansion.children.filter(child => !itemIsBlocked(child, patterns));
+      state.containerExpansions.set(container.selectionKey, {
+        title: expansion.title,
+        fileCount: expansion.fileCount,
+        expandedAt: Date.now(),
+        children,
+      });
+      container.containerTitle = expansion.title;
+      container.containerFileCount = expansion.fileCount;
+      container.containerStatus = 'expanded';
+      const before = state.items.length;
+      appendUniqueItems(state.items, children);
+      invalidateVisibleItems({ dataset: true });
+      persistItemIndex();
+      render();
+      const added = state.items.length - before;
+      notify(`${expansion.title}: ${added} new item${added === 1 ? '' : 's'} indexed.`);
+    } catch (error) {
+      container.containerStatus = 'error';
+      container.containerError = String(error?.message || error || 'Folder expansion failed');
+      recordDiagnostic('resolverFailures', `${container.containerProvider} folder expansion`, error, container);
+      render();
+      notify(`Could not expand folder: ${container.containerError}`, 6500);
+    }
   }
 
   function embedUrl(rawUrl) {
@@ -1837,6 +2291,26 @@
       });
   }
 
+  async function resolveGofileFile(item) {
+    const mediaType = item?.type === 'image' ? 'image' : 'video';
+    if (!item?.gofileFileId || !item?.containerId) {
+      return failedResolution('Gofile child identity is incomplete', mediaType, { method: 'gofile', fallbackUrl: item?.containerUrl });
+    }
+    try {
+      const payload = await requestGofileContents(item.containerId);
+      const record = gofileChildRecords(payload).find(child => String(child?.id || child?.contentId || '') === String(item.gofileFileId));
+      const direct = absoluteUrl(record?.link || record?.downloadUrl || record?.url || '');
+      if (!direct) return failedResolution('Gofile did not expose a direct file URL', mediaType, { method: 'gofile-folder-api', fallbackUrl: item.containerUrl });
+      return resolutionResult('confirmed', direct, 'gofile-folder-api', mediaType, {
+        headers: state.gofileToken ? { Authorization: `Bearer ${state.gofileToken}` } : {},
+        fallbackUrl: item.containerUrl,
+        mediaTypeUnknown: !/^image\//i.test(record?.mimetype || record?.mime || '') && !/^video\//i.test(record?.mimetype || record?.mime || ''),
+      });
+    } catch (error) {
+      return failedResolution(error?.message || 'Gofile folder request failed', mediaType, { method: 'gofile-folder-api', fallbackUrl: item.containerUrl });
+    }
+  }
+
   async function resolveCandidate(item) {
     if (!item) return failedResolution('Media item is missing', '');
     item.resolution ||= {};
@@ -1870,6 +2344,7 @@
     const mediaType = item.type === 'image' ? 'image' : 'video';
     const seed = item.resolution?.candidate;
     if (seed?.status === 'confirmed') return seed;
+    if (item.gofileFileId) return resolveGofileFile(item);
     if (mediaType === 'image') {
       const sourceDefinition = hostDefinition(item.originalLink);
       let sourceUrl;
@@ -2285,7 +2760,7 @@
 
   function normalizedPreferences(input = {}) {
     return {
-      filter: ['all', 'image', 'video', 'link', 'text'].includes(input.filter) ? input.filter : DEFAULT_SETTINGS.filter,
+      filter: ['all', 'image', 'video', 'container', 'link', 'text'].includes(input.filter) ? input.filter : DEFAULT_SETTINGS.filter,
       downloadState: DOWNLOAD_STATES.includes(input.downloadState) ? input.downloadState : DEFAULT_SETTINGS.downloadState,
       resolutionFilter: RESOLUTION_FILTERS.includes(input.resolutionFilter) ? input.resolutionFilter : DEFAULT_SETTINGS.resolutionFilter,
       compact: Boolean(input.compact),
@@ -2379,6 +2854,7 @@
       legacyStorageMigrated: state.diagnostics.migratedLegacyStorage,
       thread: { id: thread.id || 'unknown', page: pageNumberFromUrl(), knownPages: state.threadPageCount },
       scan: { source: state.sourceLabel, scannedPages: state.scannedPages, scanning: state.scanning },
+      itemIndex: { restored: state.itemIndexRestored, truncated: state.itemIndexTruncated, expandedFolders: state.containerExpansions.size },
       items: count,
       view: { ...currentPreferences(), matchedPage: state.viewPage, viewPages: state.viewPages },
       downloads: { active: state.downloading, states: jobStates, history, archive: archiveDownloadOptions(), validation: 'supported media byte signatures' },
@@ -2401,7 +2877,7 @@
     set('[data-diag-version]', APP_VERSION);
     set('[data-diag-storage]', storage.mode);
     set('[data-diag-pages]', `${state.scannedPages} scanned / ${state.threadPageCount} known`);
-    set('[data-diag-items]', `${count.all} total (${count.image} images, ${count.video} videos)`);
+    set('[data-diag-items]', `${count.all} total (${count.image} images, ${count.video} videos, ${count.container} folders)`);
     set('[data-diag-resolvers]', state.diagnostics.resolverFailures.length);
     set('[data-diag-downloads]', state.diagnostics.downloadFailures.length);
     set('[data-diag-scans]', state.diagnostics.scanFailures.length);
@@ -3057,7 +3533,7 @@
   }
 
   function buildManifestCsv(entries, archiveName) {
-    const columns = ['archive_path', 'stored', 'duplicate_of', 'duplicate_archive', 'media_type', 'page', 'reply', 'author', 'posted_at', 'host', 'source_url', 'post_url', 'bytes', 'mime', 'resolution_method', 'crc32', 'archive'];
+    const columns = ['archive_path', 'stored', 'duplicate_of', 'duplicate_archive', 'media_type', 'page', 'reply', 'author', 'posted_at', 'host', 'source_url', 'container_url', 'post_url', 'bytes', 'mime', 'resolution_method', 'crc32', 'archive'];
     const rows = entries.map(entry => {
       const item = entry.item || {};
       const sourceUrl = normalizeSourceUrl(item.originalLink || item.url || '');
@@ -3073,6 +3549,7 @@
         item.postedAt ? new Date(Number(item.postedAt)).toISOString() : '',
         hostOf(sourceUrl),
         sourceUrl,
+        normalizeSourceUrl(item.containerUrl || ''),
         normalizeSourceUrl(item.postUrl || ''),
         Number(entry.validation?.size || entry.blob?.size || 0),
         entry.validation?.mime || '',
@@ -3485,10 +3962,11 @@
     // Only the dataset moves these, so they are memoized like the facet lists
     // rather than re-walked on every render.
     if (countsCache && countsCache.revision === datasetRevision) return countsCache.value;
-    const c = { all: state.items.length, image: 0, video: 0, link: 0, text: 0 };
+    const c = { all: state.items.length, image: 0, video: 0, container: 0, link: 0, text: 0 };
     state.items.forEach(i => {
       if (i.type === 'image') c.image++;
       else if (i.type === 'video' || i.type === 'embed') c.video++;
+      else if (i.type === 'container') c.container++;
       else if (i.type === 'link') c.link++;
       else if (i.type === 'text') c.text++;
     });
@@ -3902,11 +4380,22 @@
     const selection = isDownloadableMedia(item)
       ? `<label class="scg-select" title="Select for bulk download. Shift-click extends the range, Ctrl-click adds one."><input type="checkbox" data-select="${key}" ${state.selected.has(item.selectionKey) ? 'checked' : ''}><span></span></label>`
       : '';
-    const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : item.type.toUpperCase());
+    const typeLabel = item.type === 'image' ? 'IMAGE' : (item.type === 'video' || item.type === 'embed' ? 'VIDEO' : (item.type === 'container' ? 'FOLDER' : item.type.toUpperCase()));
     const historyLabel = downloaded ? 'VERIFIED' : (legacyDownload ? 'LEGACY' : '');
     const historyTitle = downloaded ? 'Validated media recorded in download history' : (legacyDownload ? 'Older unverified history entry; this item will not be skipped' : '');
     const badge = `<div class="scg-badge"><b>${typeLabel}</b><span>${escapeHtml(sourceHost)}</span><em class="scg-saved-status ${historyLabel ? 'visible' : ''} ${legacyDownload ? 'legacy' : ''}" title="${escapeHtml(historyTitle)}">${historyLabel}</em></div>`;
     const actions = `<div class="scg-actions"><button data-open="${key}">${iconWell('info')}<span>View</span></button><button data-download="${key}" class="scg-download-action">${iconWell('download', 'scg-icon-well-primary')}<span>${downloaded ? 'Download again' : (legacyDownload ? 'Download verified copy' : 'Download')}</span></button></div>`;
+    if (item.type === 'container') {
+      const count = Math.max(0, Number(item.containerFileCount || 0));
+      const loading = item.containerStatus === 'loading';
+      const expanded = item.containerStatus === 'expanded';
+      const failed = item.containerStatus === 'error';
+      const detail = expanded
+        ? `Folder · ${count.toLocaleString()} file${count === 1 ? '' : 's'}`
+        : (loading ? 'Reading folder contents…' : (failed ? item.containerError || 'Expansion failed' : 'Folder · Not expanded'));
+      const label = loading ? 'Expanding…' : (expanded ? 'Expanded' : (failed ? 'Retry expansion' : 'Expand'));
+      return `<article class="scg-card scg-containercard ${failed ? 'has-error' : ''}" tabindex="-1" data-key="${key}">${badge}<div class="scg-container-hero">${item.thumb ? `<img loading="lazy" src="${escapeHtml(item.thumb)}" alt="">` : icon('folder')}<div><strong>${escapeHtml(item.containerTitle || item.title || `${item.containerProvider} folder`)}</strong><small>${escapeHtml(detail)}</small></div></div><div class="scg-container-actions"><button class="scg-primary" data-expand-container="${key}" ${loading || expanded ? 'disabled' : ''}>${iconWell(loading ? 'scan' : 'folder', 'scg-icon-well-primary')}<span>${label}</span></button><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">${iconWell('external')}<span>Open folder</span></a></div>${meta}</article>`;
+    }
     if (item.type === 'image') {
       const displayUrl = item.resolution?.candidate?.url || item.url || item.thumb;
       return `<article class="scg-card scg-media ${isSelected ? 'selected' : ''} ${historyClass}" tabindex="-1" style="--scg-ratio:${itemRatio(item)}" data-key="${key}">${selection}${badge}<button class="scg-preview" data-open="${key}" title="View original image"><img loading="lazy" data-resolve-key="${key}" src="${escapeHtml(displayUrl)}" alt="${escapeHtml(item.caption)}"></button>${actions}${meta}</article>`;
@@ -5301,6 +5790,8 @@
     if (state.warnLargeThreadScan && pagesToScan >= LARGE_THREAD_WARNING_PAGES) {
       if (!await confirmLargeThreadScan(pagesToScan)) return;
     }
+    const previousItems = options.append ? null : state.items;
+    const previousSelected = options.append ? null : new Set(state.selected);
     state.scanning = true;
     state.cancelScan = false;
     state.scanCanceling = false;
@@ -5367,10 +5858,17 @@
     } finally {
       if (state.cancelScan && state.scannedPages) state.sourceLabel = `Partial thread scan (${state.scannedPages} pages)`;
       else if (state.cancelScan) state.sourceLabel = 'Thread scan canceled';
+      if (!options.append && !state.scannedPages && !state.items.length && previousItems?.length) {
+        state.items = previousItems;
+        state.selected = previousSelected;
+        state.sourceLabel = 'Cached index retained after failed scan';
+        invalidateVisibleItems({ dataset: true, selection: true });
+      }
       state.scanController = null;
       state.scanning = false;
       state.scanCanceling = false;
       state.cancelScan = false;
+      if (state.items.length) persistItemIndex();
       render();
       if (pagesToScan > 1) sendCompletionNotification('Gallery scan finished', `${state.sourceLabel}: ${state.items.length} items indexed.`);
     }
@@ -5402,6 +5900,7 @@
     state.sourceLabel = `Thread page ${state.sourcePage}`;
     state.scannedPages = 1;
     rememberScannedPage(state.sourcePage, location.href);
+    persistItemIndex();
     render();
   }
 
@@ -5409,6 +5908,8 @@
     if (state.downloading) return notify('Finish or cancel the ZIP queue before scanning another page.');
     if (state.scanning) return;
     const targetPage = Math.min(Math.max(1, Number(page) || 1), state.threadPageCount);
+    const previousItems = state.items;
+    const previousSelected = new Set(state.selected);
     state.scanning = true;
     state.cancelScan = false;
     state.items = [];
@@ -5433,8 +5934,15 @@
       console.error('[SimpCity Gallery]', error);
       recordDiagnostic('scanFailures', `Page ${targetPage} scan`, error);
       notify(`Could not load page ${targetPage}: ${error.message}`, 5500);
+      if (!state.items.length && previousItems.length) {
+        state.items = previousItems;
+        state.selected = previousSelected;
+        state.sourceLabel = 'Cached index retained after failed page load';
+        invalidateVisibleItems({ dataset: true, selection: true });
+      }
     } finally {
       state.scanning = false;
+      if (state.items.length) persistItemIndex();
       render();
     }
   }
@@ -6369,6 +6877,24 @@
     #${APP_ID} .scg-host strong{font-size:var(--scg-fs-base);word-break:break-word}
     #${APP_ID} .scg-host small{color:var(--scg-muted);font-size:var(--scg-fs-xs)}
     #${APP_ID} .scg-host:hover{background:linear-gradient(150deg,var(--scg-accent-soft),var(--scg-surface-2))}
+
+    #${APP_ID} .scg-containercard{min-height:230px}
+    #${APP_ID} .scg-containercard.has-error{border-color:color-mix(in srgb,var(--scg-danger) 50%,var(--scg-line))}
+    #${APP_ID} .scg-container-hero{
+      display:flex;align-items:center;gap:14px;min-height:142px;padding:46px 16px 16px;
+      background:linear-gradient(150deg,var(--scg-accent-soft),var(--scg-surface-2));
+    }
+    #${APP_ID} .scg-container-hero>.scg-icon{width:46px;height:46px;flex:none;color:var(--scg-accent)}
+    #${APP_ID} .scg-container-hero>img{width:64px;height:64px;flex:none;border-radius:var(--scg-r-sm);object-fit:cover;background:var(--scg-well)}
+    #${APP_ID} .scg-container-hero>div{display:flex;min-width:0;flex-direction:column;gap:5px}
+    #${APP_ID} .scg-container-hero strong{overflow:hidden;text-overflow:ellipsis;font-size:var(--scg-fs-base);word-break:break-word}
+    #${APP_ID} .scg-container-hero small{overflow:hidden;color:var(--scg-muted);font-size:var(--scg-fs-sm);text-overflow:ellipsis}
+    #${APP_ID} .scg-container-actions{display:flex;gap:8px;padding:9px 10px;border-top:1px solid var(--scg-line)}
+    #${APP_ID} .scg-container-actions button,
+    #${APP_ID} .scg-container-actions a{display:inline-flex;min-height:34px;align-items:center;justify-content:center;gap:7px;flex:1;padding:6px 10px;border:1px solid var(--scg-line);border-radius:var(--scg-r-sm);background:var(--scg-surface-2);color:var(--scg-text-soft);font:inherit;font-size:var(--scg-fs-sm);font-weight:650;text-decoration:none;cursor:pointer}
+    #${APP_ID} .scg-container-actions button:disabled{cursor:default;opacity:.58}
+    #${APP_ID} .scg-container-actions a:hover{border-color:var(--scg-line-strong);color:var(--scg-text)}
+    #${APP_ID}[data-layout="grid"] .scg-container-hero{min-height:0;flex:1}
 
     #${APP_ID} .scg-textcard p{
       display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:8;
@@ -7422,6 +7948,7 @@
 
   `;
   document.head.appendChild(style);
+  restoreItemIndex();
 
   const launch = document.createElement('button');
   launch.id = 'scg-tl-launch';
@@ -7435,6 +7962,7 @@
     if (detail) detail.textContent = count ? `Media browser · ${count.toLocaleString()} indexed` : `Media browser · v${APP_VERSION}`;
     launch.setAttribute('aria-label', count ? `Open SimpCity Thread Gallery Timeline, ${count} media items indexed` : 'Open SimpCity Thread Gallery Timeline');
   }
+  refreshLaunchButton();
 
   const app = document.createElement('section');
   app.id = APP_ID;
@@ -7494,6 +8022,7 @@
           <button class="active" data-filter="all" aria-pressed="true">${icon('gallery')}<b>All</b><span aria-hidden="true">0</span></button>
           <button data-filter="image" aria-pressed="false">${icon('image')}<b>Images</b><span aria-hidden="true">0</span></button>
           <button data-filter="video" aria-pressed="false">${icon('video')}<b>Videos</b><span aria-hidden="true">0</span></button>
+          <button data-filter="container" aria-pressed="false">${icon('folder')}<b>Folders</b><span aria-hidden="true">0</span></button>
           <button data-filter="link" aria-pressed="false">${icon('link')}<b>Links</b><span aria-hidden="true">0</span></button>
           <button data-filter="text" aria-pressed="false">${icon('text')}<b>Text</b><span aria-hidden="true">0</span></button>
         </div>
@@ -7576,7 +8105,7 @@
           <section class="scg-settings-card"><h3>${icon('scan')} Scan and background work</h3><p>Large scans index HTML from every requested page and can use substantial memory. Optional embed posters cost one lazy request per visible host card.</p><label class="scg-settings-check"><input type="checkbox" data-setting-warn-large-scan><span>Warn before scanning ${LARGE_THREAD_WARNING_PAGES} or more pages</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-embed-posters><span>Fetch embed poster images lazily</span></label><label class="scg-settings-check"><input type="checkbox" data-setting-completion-notifications><span>Desktop notification when a long scan or ZIP queue finishes</span></label></section>
           <section class="scg-settings-card"><h3>${icon('keyboard')} Keyboard shortcuts</h3><p>Click a chord and press the keys you want. Escape cancels a recording. Shortcuts never fire while you are typing in a field, and the media viewer's own keys are fixed.</p><div class="scg-shortcut-rows">${SHORTCUT_ACTIONS.map(action => `<div class="scg-shortcut-row"><span>${escapeHtml(action.label)}</span><button type="button" class="scg-shortcut-key" data-shortcut="${action.id}" aria-label="Change the shortcut for ${escapeHtml(action.label)}"></button></div>`).join('')}</div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="reset-shortcuts">${iconWell('reset')}<span>Restore defaults</span></button></div></section>
           <section class="scg-settings-card"><h3>${icon('filter')} Ignore list</h3><p>Media whose URL contains any of these fragments is never indexed, so it costs no card and no memory. One fragment per line or separated by commas. Editing this drops anything already indexed that matches.</p><textarea class="scg-block-patterns" data-setting-block-patterns rows="4" spellcheck="false" placeholder="signature.example.com&#10;/avatars/&#10;banner-"></textarea><div class="scg-block-summary" data-block-summary role="status"></div></section>
-          <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences and verified download history are stored outside the website. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
+          <section class="scg-settings-card"><h3>${icon('info')} Storage</h3><p>Preferences, selections, verified history, and up to six 420 KB thread indexes are stored outside the website. Gofile tokens are never saved. Pre-v0.7.3 history remains visible as LEGACY but will not skip a new download.</p><div class="scg-storage-note">${icon('select')}<span><b data-diag-storage></b><br><span data-diag-migration></span></span></div></section>
           <section class="scg-settings-card"><h3>${icon('upload')} Backup and restore</h3><p>Export preferences as JSON or restore a previous backup.</p><label class="scg-settings-check"><input type="checkbox" data-export-history><span>Include download history. This contains thread and media references.</span></label><div class="scg-settings-actions"><button data-action="export-settings">${iconWell('download')}<span>Export</span></button><button data-action="import-settings">${iconWell('upload')}<span>Import</span></button><input class="scg-settings-file" data-settings-file type="file" accept="application/json,.json"></div></section>
           <section class="scg-settings-card full"><h3>${icon('info')} Diagnostics</h3><p>A local, URL-scrubbed summary for troubleshooting. Nothing is transmitted automatically.</p><div class="scg-diag-grid"><div class="scg-diag-stat"><span>Version</span><b data-diag-version></b></div><div class="scg-diag-stat"><span>Thread pages</span><b data-diag-pages></b></div><div class="scg-diag-stat"><span>Indexed items</span><b data-diag-items></b></div><div class="scg-diag-stat"><span>Download history</span><b data-diag-history></b></div><div class="scg-diag-stat"><span>Resolver failures</span><b data-diag-resolvers></b></div><div class="scg-diag-stat"><span>Download failures</span><b data-diag-downloads></b></div><div class="scg-diag-stat"><span>Scan failures</span><b data-diag-scans></b></div><div class="scg-diag-stat"><span>Storage</span><b data-diag-storage></b></div></div><div class="scg-settings-actions" style="margin-top:10px"><button data-action="copy-debug">${iconWell('copy')}<span>Copy debug report</span></button><button data-action="clear-diagnostics">${iconWell('reset')}<span>Clear diagnostics</span></button></div></section>
           <section class="scg-settings-card"><h3>${icon('reset')} Reset</h3><p>Reset visual preferences, or also forget SAVED download markers.</p><div class="scg-settings-actions"><button data-action="reset-preferences">${iconWell('reset')}<span>Reset preferences</span></button><button class="danger" data-action="reset-everything">${iconWell('trash', 'scg-icon-well-danger')}<span>Reset preferences + history</span></button></div></section>
@@ -7606,6 +8135,10 @@
     if (migratedLegacyStorage && !openApp.migrationNotified) {
       openApp.migrationNotified = true;
       notify('Your previous gallery settings were moved into private userscript storage.', 5200);
+    }
+    if (state.itemIndexTruncated && !openApp.indexNoticeShown) {
+      openApp.indexNoticeShown = true;
+      notify('The cached thread index reached its 420 KB budget. Newer media and expanded folders were kept; rescan to rebuild anything omitted.', 7200);
     }
   }
 
@@ -7792,10 +8325,17 @@
   };
   const blockPatternsField = app.querySelector('[data-setting-block-patterns]');
   blockPatternsField.onchange = () => {
+    const previousPatterns = blockPatternList(state.blockPatterns);
     commitState({ blockPatterns: String(blockPatternsField.value || '').slice(0, 2000) }, { persist: true, shellOnly: true });
+    const nextPatterns = blockPatternList(state.blockPatterns);
+    const relaxed = previousPatterns.some(pattern => !nextPatterns.includes(pattern));
     const removed = purgeBlockedItems();
+    if (relaxed) storage.remove(itemIndexStorageKey());
+    else persistItemIndex();
     render();
-    notify(removed
+    notify(relaxed
+      ? 'Ignore list relaxed. Rescan to restore items that were previously excluded.'
+      : removed
       ? `Ignore list updated. ${removed} indexed ${removed === 1 ? 'item was' : 'items were'} dropped.`
       : 'Ignore list updated. It applies to everything indexed from now on.');
   };
@@ -7980,6 +8520,11 @@
       startEmbeddedPlayer(itemForNode(player, 'loadPlayer'), player.closest('.scg-embed'));
       return;
     }
+    const containerExpand = event.target.closest('[data-expand-container]');
+    if (containerExpand) {
+      expandContainer(itemForNode(containerExpand, 'expandContainer'));
+      return;
+    }
     const expand = event.target.closest('[data-expand]');
     if (expand) {
       const item = itemForNode(expand, 'expand');
@@ -8090,6 +8635,7 @@
         if (state.selectedOnly) render();
       }
       else if (event.key === 'Enter' && isMediaItem(item)) controllers.viewer.open(item);
+      else if (event.key === 'Enter' && item?.type === 'container') expandContainer(item);
       return;
     }
     // One normalized chord per event, matched against the bindings, so a
