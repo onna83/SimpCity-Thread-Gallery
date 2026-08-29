@@ -48,8 +48,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '1.0.0');
-  assert.match(source, /const APP_VERSION = '1\.0\.0'/);
+  assert.equal(metadataValue('version'), '1.0.1');
+  assert.match(source, /const APP_VERSION = '1\.0\.1'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -1938,60 +1938,31 @@ test('one media counter per reply, not one per extraction pass', () => {
     source.indexOf('function extractFromDocument'),
     source.indexOf('function purgeBlockedItems'),
   );
-  // Five passes each restarting at zero gave a folder, <video>, and direct
-  // .mp4 link in one reply colliding with each other.
+  // Four passes each restarting at zero gave a <video> and direct .mp4 link
   // in one reply the same -vid01 filename.
   assert.doesNotMatch(body, /forEach\(\((?:img|video|frame|anchor), mediaIndex\)/);
   assert.match(body, /let mediaIndex = 0;/);
   // Images capture the number first because mediaKey also uses it.
   assert.match(body, /const order = mediaIndex\+\+;/);
-  assert.equal((body.match(/mediaIndex: mediaIndex\+\+/g) || []).length, 5);
+  assert.equal((body.match(/mediaIndex: mediaIndex\+\+/g) || []).length, 4);
 });
 
-test('container URLs are recognized without claiming single files', () => {
-  const { containerDescriptor } = evaluateSlice(
-    'function containerDescriptor',
-    'const isContainerUrl',
-    ['containerDescriptor'],
-    { normalizeSourceUrl: value => String(value) },
-  );
-
-  assert.deepEqual(plain(containerDescriptor('https://bunkr.cr/a/album-42')), {
-    provider: 'bunkr', id: 'album-42', url: 'https://bunkr.cr/a/album-42',
-  });
-  assert.deepEqual(plain(containerDescriptor('https://pixeldrain.com/l/list-id?download')), {
-    provider: 'pixeldrain', id: 'list-id', url: 'https://pixeldrain.com/l/list-id',
-  });
-  assert.deepEqual(plain(containerDescriptor('https://gofile.io/d/folder-id/')), {
-    provider: 'gofile', id: 'folder-id', url: 'https://gofile.io/d/folder-id',
-  });
-  assert.equal(containerDescriptor('https://bunkr.cr/f/file-id'), null);
-  assert.equal(containerDescriptor('https://pixeldrain.com/u/file-id'), null);
-});
-
-test('container cards are on-demand and never selectable', () => {
-  const cardBody = source.slice(source.indexOf('function card(item)'), source.indexOf('function gridNavigationTarget'));
-  const extractionBody = source.slice(source.indexOf('function extractFromDocument'), source.indexOf('function purgeBlockedItems'));
-  assert.match(extractionBody, /type: 'container'/);
-  assert.match(extractionBody, /if \(isContainerUrl\(originalLink\)\) return/);
-  assert.match(cardBody, /data-expand-container/);
-  assert.match(cardBody, /Folder · Not expanded/);
-  assert.ok(cardBody.indexOf("if (item.type === 'container')") > cardBody.indexOf('const selection = isDownloadableMedia'));
+test('folder expansion and its token flow are absent', () => {
+  for (const marker of [
+    'data-expand-container',
+    'requestGofileContents',
+    'bunkrContainerChildren',
+    'pixeldrainContainerChildren',
+    'containerExpansions',
+    'gofileToken',
+  ]) assert.doesNotMatch(source, new RegExp(marker));
+  assert.doesNotMatch(source, /type: 'container'/);
+  assert.doesNotMatch(source, /data-filter="container"/);
   assert.match(source, /const isMediaItem = item => item\?\.type === 'image' \|\| item\?\.type === 'video' \|\| item\?\.type === 'embed'/);
-  assert.equal((source.match(/\['all', 'image', 'video', 'container', 'link', 'text'\]/g) || []).length, 2);
+  assert.equal((source.match(/\['all', 'image', 'video', 'link', 'text'\]/g) || []).length, 2);
 });
 
-test('expanded children keep direct identity and container provenance', () => {
-  const dedupeBody = source.slice(source.indexOf('function itemDedupeKey'), source.indexOf('function appendUniqueItems'));
-  const manifestBody = source.slice(source.indexOf('function buildManifestCsv'), source.indexOf('function zipCanceledError'));
-  assert.match(dedupeBody, /return `gofile\|\$\{item\.gofileFileId\}`/);
-  assert.match(dedupeBody, /return `\$\{definition\.id\}\|\$\{mediaId\}`/);
-  assert.match(source, /containerParentKey: container\.selectionKey/);
-  assert.match(manifestBody, /'container_url'/);
-  assert.match(manifestBody, /item\.containerUrl/);
-});
-
-test('new host-file identities still recognize pre-1.0 selections and history', () => {
+test('direct host-file identities retain pre-1.0 selections and history', () => {
   const { downloadHistoryEntry } = evaluateSlice(
     'function downloadHistoryEntry',
     'function wasDownloaded',
@@ -2008,88 +1979,48 @@ test('new host-file identities still recognize pre-1.0 selections and history', 
 
   assert.equal(downloadHistoryEntry(item).verified, true);
   assert.match(source, /aliases\.some\(alias => persistedSelectionKeys\.has\(alias\)\)/);
-  assert.match(source, /aliases\.add\(`videoish\|\$\{normalizedDedupeUrl\(embedUrl\(identityUrl\)\)\}`\)/);
+  assert.match(source, /if \(mediaId && \(definition\?\.id === 'bunkr' \|\| definition\?\.id === 'pixeldrain'\)\)/);
 });
 
 test('the per-thread item index is schema-bound, ignore-bound, and budgeted', () => {
+  assert.match(source, /const ITEM_INDEX_SCHEMA = 2/);
+  assert.match(source, /const ITEM_INDEX_EXTRACTION_VERSION = 'items-v2'/);
   assert.match(source, /const ITEM_INDEX_MAX_BYTES = 420000/);
   assert.match(source, /const ITEM_INDEX_THREAD_LIMIT = 6/);
   assert.match(source, /entry\.schema === ITEM_INDEX_SCHEMA/);
   assert.match(source, /entry\.extractionVersion === ITEM_INDEX_EXTRACTION_VERSION/);
   assert.match(source, /entry\.ignoreSignature === itemIndexIgnoreSignature\(\)/);
-  assert.match(source, /items\.filter\(item => !item\.containerParentKey\)/);
+  assert.match(source, /const candidates = items\.map\(\(item, order\) => \(\{ item, order \}\)\)/);
   assert.match(source, /registry\.slice\(ITEM_INDEX_THREAD_LIMIT\)\.forEach\(row => storage\.remove\(row\.key\)\)/);
   assert.match(source, /restoreItemIndex\(\);/);
 });
 
-test('an oversized folder cache is omitted whole instead of restoring as falsely complete', () => {
+test('the item index stays within its byte budget and prioritizes media', () => {
   const { boundedItemIndexEntry } = evaluateSlice(
     'const INDEX_ITEM_FIELDS',
     'function persistItemIndex()',
     ['boundedItemIndexEntry'],
     {
       TextEncoder,
-      ITEM_INDEX_SCHEMA: 1,
-      ITEM_INDEX_EXTRACTION_VERSION: 'test-v1',
+      ITEM_INDEX_SCHEMA: 2,
+      ITEM_INDEX_EXTRACTION_VERSION: 'items-v2',
       ITEM_INDEX_MAX_BYTES: 1200,
       itemIndexIgnoreSignature: () => 'ignore-signature',
       isMediaItem: item => ['image', 'video', 'embed'].includes(item?.type),
     },
   );
-  const expansion = {
-    title: 'Large folder', fileCount: 2, expandedAt: 42,
-    children: [
-      { type: 'image', url: `https://example.test/${'a'.repeat(900)}.jpg` },
-      { type: 'image', url: `https://example.test/${'b'.repeat(900)}.jpg` },
-    ],
-  };
   const result = boundedItemIndexEntry(
-    [{ type: 'container', url: 'https://pixeldrain.com/l/folder', containerProvider: 'pixeldrain', containerId: 'folder' }],
-    new Map([['container|pixeldrain|folder', expansion]]),
+    [
+      { type: 'text', text: 'x'.repeat(900), postId: 'text' },
+      { type: 'image', url: `https://example.test/${'a'.repeat(900)}.jpg` },
+      { type: 'image', url: 'https://example.test/kept.jpg' },
+    ],
     { threadPageCount: 1 },
   );
 
   assert.equal(result.truncated, true);
-  assert.equal(result.containers.length, 0, 'a partial expansion must not masquerade as a complete cached folder');
+  assert.ok(result.items.some(item => item.url === 'https://example.test/kept.jpg'));
   assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') <= 1200);
-});
-
-test('Pixeldrain list payloads become typed child records', () => {
-  const { pixeldrainContainerChildren } = evaluateSlice(
-    'function pixeldrainContainerChildren',
-    'async function requestGofileContents',
-    ['pixeldrainContainerChildren'],
-    {
-      absoluteUrl: (value, base) => new URL(value, base).href,
-      inferredFileType: (name, mime) => mime.startsWith('image/') ? 'image' : (mime.startsWith('video/') ? 'video' : 'unknown'),
-      containerChildBase: (_container, index) => ({ mediaIndex: index }),
-    },
-  );
-  const result = pixeldrainContainerChildren(
-    { title: 'Fallback' },
-    JSON.stringify({ title: 'List title', file_count: 3, files: [
-      { id: 'image-id', name: 'one.jpg', mime_type: 'image/jpeg', thumbnail_href: '/api/file/image-id/thumbnail' },
-      { id: 'video-id', name: 'two.mp4', mime_type: 'video/mp4' },
-      { id: 'other-id', name: 'three.zip', mime_type: 'application/zip' },
-    ] }),
-  );
-
-  assert.equal(result.title, 'List title');
-  assert.equal(result.fileCount, 3);
-  assert.deepEqual(plain(result.children.map(child => [child.type, child.identityUrl])), [
-    ['image', 'https://pixeldrain.com/u/image-id'],
-    ['embed', 'https://pixeldrain.com/u/video-id'],
-    ['link', 'https://pixeldrain.com/u/other-id'],
-  ]);
-});
-
-test('Gofile bearer tokens are tab-only and stripped from cached children', () => {
-  const settingsBody = source.slice(source.indexOf('function persistSettings'), source.indexOf('function refreshThreadHeader'));
-  const indexBody = source.slice(source.indexOf('function indexableResolution'), source.indexOf('function indexableItem'));
-  assert.doesNotMatch(settingsBody, /gofileToken/);
-  assert.match(indexBody, /if \(item\?\.gofileFileId\) return \{\}/);
-  assert.match(source, /kept only in this tab and is never saved/);
-  assert.match(source, /Authorization: `Bearer \$\{token\}`/);
 });
 
 test('an unresolved Bunkr file can be selected, but an album cannot', () => {

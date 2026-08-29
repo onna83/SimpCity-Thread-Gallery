@@ -2,6 +2,16 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 1.0.1 (timeline fork — unreleased)
+
+Removes folder expansion after live host testing exposed an unreliable contract: Bunkr album reads return HTTP 403, Gofile requires an account token, and expanded children could disappear from reply-grouped views even while their facet counts changed.
+
+- Removed folder/container cards, the Folders facet, expansion controls, child injection, and folder-specific card styling.
+- Removed Bunkr album scraping, Pixeldrain list expansion, Gofile API calls, and the Gofile token prompt. Album, list, and folder URLs are ordinary host cards again.
+- Removed folder provenance from manifests and item records. Direct Bunkr and Pixeldrain single-file resolvers remain unchanged.
+- Bumped the bounded item-index schema so cached expanded children from 1.0.0 are discarded. The 420 KB per-thread cache and six-thread retention policy remain.
+- Added regression coverage that prevents the expansion UI, token flow, and container item type from returning.
+
 ## 1.0.0 (timeline fork — unreleased)
 
 Completes Phase 4 of the timeline plan: host folders become first-class, on-demand containers, and a bounded item index makes revisiting large threads immediate.
