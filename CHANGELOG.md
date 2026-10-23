@@ -2,6 +2,11 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 1.0.2 (timeline fork — unreleased)
+
+- Fixed image and video counts staying at zero after loading another thread page. The completed page load now invalidates the empty dataset cached by the loading render, refreshing totals and author/host filters.
+- Added regression coverage for consecutive page loads, current-page scans, empty pages, and retaining the previous page after a failed request.
+
 ## 1.0.1 (timeline fork — unreleased)
 
 Removes folder expansion after live host testing exposed an unreliable contract: Bunkr album reads return HTTP 403, Gofile requires an account token, and expanded children could disappear from reply-grouped views even while their facet counts changed.

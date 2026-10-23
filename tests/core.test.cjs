@@ -30,6 +30,78 @@ function evaluateSlice(startMarker, endMarker, names, context = {}) {
   return sandbox.__tested;
 }
 
+test('page loading refreshes cached media totals and facets after the loading render', async () => {
+  const state = {
+    items: [{ type: 'image', author: 'Previous', sourceHost: 'old.test' }],
+    selected: new Set(), collapsedReplies: new Set(), expandedKeys: new Set(),
+    activePlayers: new Set(), playbackPositions: new Map(), threadPageCount: 4,
+  };
+  const currentPage = [{ type: 'video', author: 'Current', sourceHost: 'current.test' }];
+  let fetchedPage = [
+    { type: 'image', author: 'New', sourceHost: 'new.test' },
+    { type: 'image', author: 'New', sourceHost: 'new.test' },
+    { type: 'video', author: 'New', sourceHost: 'new.test' },
+    { type: 'embed', author: 'New', sourceHost: 'new.test' },
+  ];
+  let failRequest = false;
+  let api;
+  const renders = [];
+  const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+  const sandbox = {
+    state, URL, Set, document: currentPage,
+    location: new URL('https://simpcity.cr/threads/example.1/page-2'),
+    threadPageUrl: page => `https://simpcity.cr/threads/example.1/page-${page}`,
+    pageNumberFromUrl: () => 2,
+    fetch: async () => {
+      if (failRequest) throw new Error('offline');
+      return { ok: true, text: async () => '<page>' };
+    },
+    DOMParser: class { parseFromString() { return fetchedPage; } },
+    extractFromDocument: doc => doc,
+    dedupe: items => [...items],
+    itemSourceHost: item => item.sourceHost,
+    compareText: (a, b) => a.localeCompare(b),
+    blankDownloadProgress: () => ({}),
+    updateThreadPageInfo() {}, rememberScannedPage() {}, persistItemIndex() {},
+    notify() {}, recordDiagnostic() {}, console: { error() {} },
+    // The loading render must populate the real caches, just like the UI.
+    render: () => renders.push({ counts: plain(api.counts()), authors: [...api.facetOptions().authors] }),
+  };
+  vm.runInNewContext([
+    slice('let datasetRevision =', '// Aspect ratios drive layout'),
+    slice('let countsCache =', '// Indexed items carry this'),
+    slice('function facetOptions()', '// Counts move with every other facet'),
+    slice('function resetDatasetState()', 'function updateScanStatus()'),
+    slice('function scanCurrentPage()', "const style = document.createElement('style')"),
+    'globalThis.__tested = { counts, facetOptions, scanCurrentPage, scanSpecificPage };',
+  ].join('\n'), sandbox);
+  api = sandbox.__tested;
+
+  assert.equal(api.counts().image, 1);
+  await api.scanSpecificPage(3);
+  assert.deepEqual(renders[0], { counts: { all: 0, image: 0, video: 0, link: 0, text: 0 }, authors: [] });
+  assert.deepEqual(renders.at(-1), { counts: { all: 4, image: 2, video: 2, link: 0, text: 0 }, authors: ['New'] });
+  assert.deepEqual([...api.facetOptions().hosts], ['new.test']);
+
+  // A second load can use the current DOM rather than fetching another page.
+  await api.scanSpecificPage(2);
+  assert.deepEqual(renders.at(-1), { counts: { all: 1, image: 0, video: 1, link: 0, text: 0 }, authors: ['Current'] });
+
+  failRequest = true;
+  await api.scanSpecificPage(3);
+  assert.equal(api.counts().video, 1, 'a failed request retains the previous page');
+  assert.deepEqual([...api.facetOptions().authors], ['Current']);
+
+  failRequest = false;
+  fetchedPage = [];
+  await api.scanSpecificPage(4);
+  assert.equal(api.counts().all, 0, 'a genuinely empty page still reports zero');
+  assert.deepEqual([...api.facetOptions().authors], []);
+
+  api.scanCurrentPage();
+  assert.equal(api.counts().video, 1, 'rescanning the current page refreshes the totals');
+});
+
 test('the stylesheet literal carries no stray template delimiters', () => {
   const opener = 'style.textContent = `';
   const start = source.indexOf(opener);
@@ -48,8 +120,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '1.0.1');
-  assert.match(source, /const APP_VERSION = '1\.0\.1'/);
+  assert.equal(metadataValue('version'), '1.0.2');
+  assert.match(source, /const APP_VERSION = '1\.0\.2'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');

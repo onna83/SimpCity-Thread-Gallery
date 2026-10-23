@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      1.0.1
+// @version      1.0.2
 // @description  Timeline fork of SimpCity Thread Gallery: cached thread indexes, virtualized browsing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '1.0.1';
+  const APP_VERSION = '1.0.2';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -5604,6 +5604,8 @@
       }
       updateThreadPageInfo(doc, targetUrl);
       state.items = dedupe(extractFromDocument(doc, targetUrl));
+      // The loading render cached the empty dataset; refresh totals and facets.
+      invalidateVisibleItems({ dataset: true });
       state.scannedPages = 1;
       rememberScannedPage(targetPage, targetUrl);
     } catch (error) {
