@@ -2,6 +2,11 @@
 
 This file records only history supported by the available source snapshots and project notes. Earlier releases did not have complete per-version release notes, so they are not reconstructed from guesswork.
 
+## 1.1.0 (timeline fork — unreleased)
+
+- Added a Posts tab, visible only with Group by reply enabled. Replies show sections in Text, Links, Images, Videos order, including embedded videos; empty sections are omitted and reply text is shown in full.
+- Posts use the existing search, filters, reply selection, collapse controls, and media viewer. Pagination keeps each reply together, and disabling reply grouping returns an active Posts view to All.
+
 ## 1.0.2 (timeline fork — unreleased)
 
 - Fixed image and video counts staying at zero after loading another thread page. The completed page load now invalidates the empty dataset cached by the loading render, refreshing totals and author/host filters.

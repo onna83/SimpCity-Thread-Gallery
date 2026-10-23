@@ -14,6 +14,7 @@ The target is `https://simpcity.cr/threads/*`. The forum and the material shown 
 - Keeps author, date, page, reply, post, caption, source, and host provenance.
 - Shows masonry and uniform-grid layouts with search, download-state and resolution filtering, plus date and resolution sorting. Masonry renders only what is on screen.
 - Collapses individual reply groups or all groups in the current filtered results.
+- With **Group by reply** enabled, the **Posts** tab shows each reply in **Text → Links → Images → Videos** sections. Empty sections are omitted; reply text is shown in full. Search and refinements still apply, and result pages keep replies together (a large reply can exceed the chosen item limit).
 - Opens images and supported videos in a keyboard-friendly lightbox.
 - Resolves original images and direct video files where a host exposes them, including Bunkr's signed CDN URLs and Pixeldrain single-file links.
 - Optionally fetches embed posters lazily through the bounded media scheduler.

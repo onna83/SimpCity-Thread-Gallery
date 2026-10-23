@@ -69,6 +69,7 @@ test('page loading refreshes cached media totals and facets after the loading re
   };
   vm.runInNewContext([
     slice('let datasetRevision =', '// Aspect ratios drive layout'),
+    slice('function replyKey(', 'function setReplyCollapsed'),
     slice('let countsCache =', '// Indexed items carry this'),
     slice('function facetOptions()', '// Counts move with every other facet'),
     slice('function resetDatasetState()', 'function updateScanStatus()'),
@@ -79,13 +80,13 @@ test('page loading refreshes cached media totals and facets after the loading re
 
   assert.equal(api.counts().image, 1);
   await api.scanSpecificPage(3);
-  assert.deepEqual(renders[0], { counts: { all: 0, image: 0, video: 0, link: 0, text: 0 }, authors: [] });
-  assert.deepEqual(renders.at(-1), { counts: { all: 4, image: 2, video: 2, link: 0, text: 0 }, authors: ['New'] });
+  assert.deepEqual(renders[0], { counts: { all: 0, image: 0, video: 0, link: 0, text: 0, post: 0 }, authors: [] });
+  assert.deepEqual(renders.at(-1), { counts: { all: 4, image: 2, video: 2, link: 0, text: 0, post: 1 }, authors: ['New'] });
   assert.deepEqual([...api.facetOptions().hosts], ['new.test']);
 
   // A second load can use the current DOM rather than fetching another page.
   await api.scanSpecificPage(2);
-  assert.deepEqual(renders.at(-1), { counts: { all: 1, image: 0, video: 1, link: 0, text: 0 }, authors: ['Current'] });
+  assert.deepEqual(renders.at(-1), { counts: { all: 1, image: 0, video: 1, link: 0, text: 0, post: 1 }, authors: ['Current'] });
 
   failRequest = true;
   await api.scanSpecificPage(3);
@@ -120,8 +121,8 @@ test('the stylesheet literal carries no stray template delimiters', () => {
 test('canonical metadata preserves the installed script identity', () => {
   assert.equal(metadataValue('name'), 'SimpCity Thread Gallery Timeline');
   assert.equal(metadataValue('namespace'), 'local.simpcity.gallery.timeline');
-  assert.equal(metadataValue('version'), '1.0.2');
-  assert.match(source, /const APP_VERSION = '1\.0\.2'/);
+  assert.equal(metadataValue('version'), '1.1.0');
+  assert.match(source, /const APP_VERSION = '1\.1\.0'/);
   assert.equal(metadataValue('license'), 'MIT');
   assert.equal(metadataValue('match'), 'https://simpcity.cr/threads/*');
   assert.equal(metadataValue('run-at'), 'document-idle');
@@ -313,7 +314,7 @@ test('collapsed groups omit cards, expose aria-expanded, and reset with the data
   const resetSource = source.slice(resetStart, resetEnd);
 
   assert.match(groupsSource, /aria-expanded="\$\{String\(!collapsed\)\}"/);
-  assert.match(groupsSource, /collapsed \? '' : group\.entries\.map/);
+  assert.match(groupsSource, /const content = collapsed \? '' : postView/);
   assert.match(groupsSource, /iconWell\('chevron'\)/);
   assert.match(resetSource, /state\.collapsedReplies\.clear\(\)/);
   assert.doesNotMatch(source.slice(source.indexOf('function persistSettings'), source.indexOf('function refreshThreadHeader')), /collapsedReplies/);
@@ -911,6 +912,71 @@ test('buildViewPages treats All as one view without a separate code path', () =>
   assert.deepEqual(plain(buildViewPages([])), [[]]);
 });
 
+test('Posts includes every item type, orders each reply, and keeps replies on one result page', () => {
+  const state = { filter: 'post', groupBy: 'reply', downloadState: 'all', perPage: 3 };
+  const { replyKey, orderPostItems, filterParts, buildViewPages } = evaluateSlice(
+    'function replyKey(', 'function mediaItems',
+    ['replyKey', 'orderPostItems', 'filterParts', 'buildViewPages'], { state },
+  );
+  const item = (type, postId, mediaIndex = 0) => ({ type, postId, mediaIndex, pageNumber: 1 });
+  const items = [item('video', 'b', 3), item('image', 'a', 2), item('text', 'b'),
+    item('link', 'b', 1), item('embed', 'b', 4), item('image', 'b', 2), item('text', 'a')];
+  items.forEach(entry => assert.equal(filterParts(entry).type, true));
+  const ordered = orderPostItems(items);
+  assert.deepEqual(plain(ordered.map(entry => `${replyKey(entry)}:${entry.type}`)),
+    ['1|b:text', '1|b:link', '1|b:image', '1|b:video', '1|b:embed', '1|a:text', '1|a:image']);
+  assert.equal(items[0].type, 'video', 'ordering leaves the indexed array untouched');
+  assert.deepEqual(plain(buildViewPages(ordered)).map(page => page.length), [5, 2]);
+  assert.deepEqual(plain(buildViewPages(ordered, 0)).map(page => page.length), [7]);
+  state.groupBy = 'none';
+  assert.equal(filterParts(items[0]).type, false, 'Posts is not available without reply grouping');
+  state.filter = 'image';
+  assert.equal(filterParts(items[0]).type, false);
+  assert.equal(filterParts(items[1]).type, true, 'the other type tabs retain their behavior');
+});
+
+test('Posts renders ordered nonempty sections and honors reply collapse', () => {
+  const state = { filter: 'post', collapsedReplies: new Set() };
+  const { postContentMarkup, replyGroupsMarkup } = evaluateSlice(
+    'function postContentMarkup(', 'let allClampAnnounced', ['postContentMarkup', 'replyGroupsMarkup'],
+    {
+      state, FILTER_LABELS: { text: 'Text', link: 'Links', image: 'Images', video: 'Videos' },
+      replyKey: item => item.postId, escapeHtml: value => String(value),
+      card: item => `<article data-test-id="${item.id}"></article>`,
+      icon: () => '', iconWell: () => '', replySelectionState: () => ({ total: 0 }), replySelectionSummary: () => '',
+    },
+  );
+  const items = [{ type: 'embed', id: 'embed' }, { type: 'image', id: 'later', mediaIndex: 2 },
+    { type: 'text', id: 'text' }, { type: 'link', id: 'link' }, { type: 'image', id: 'earlier', mediaIndex: 1 }]
+    .map(item => ({ postId: 'one', ...item }));
+  const html = postContentMarkup(items);
+  assert.deepEqual([...html.matchAll(/data-post-type="([^"]+)"/g)].map(match => match[1]), ['text', 'link', 'image', 'video']);
+  assert.deepEqual([...html.matchAll(/data-test-id="([^"]+)"/g)].map(match => match[1]), ['text', 'link', 'earlier', 'later', 'embed']);
+  assert.equal(postContentMarkup([]), '');
+  assert.doesNotMatch(postContentMarkup([items[0]]), /data-post-type="image"/);
+  assert.match(replyGroupsMarkup(items), /scg-post-content/);
+  state.collapsedReplies.add('one');
+  assert.doesNotMatch(replyGroupsMarkup(items), /data-post-type|data-test-id/);
+  state.collapsedReplies.clear();
+  state.filter = 'all';
+  assert.doesNotMatch(replyGroupsMarkup(items), /scg-post-content|data-post-type/);
+});
+
+test('turning reply grouping off exits Posts before saving preferences', () => {
+  const state = { filter: 'post', groupBy: 'reply', viewPage: 3 };
+  let saved;
+  const { commitState } = evaluateSlice('function commitState(', 'const cleanText =', ['commitState'], {
+    state, persistSettings: () => { saved = { ...state }; }, render() {},
+  });
+  commitState({ groupBy: 'none' }, { persist: true });
+  assert.equal(saved.filter, 'all');
+  assert.equal(saved.viewPage, 1);
+  commitState({ groupBy: 'reply' });
+  assert.equal(state.filter, 'all', 're-enabling grouping does not unexpectedly switch views');
+  commitState({ filter: 'post' }, { persist: true });
+  assert.equal(saved.filter, 'post');
+});
+
 test('icon geometry stays larger than the stroke that draws it', () => {
   // Icons render at 17px with a 1.6 stroke, so a feature under ~1.5 units in a
   // 24-unit box is thinner than its own outline and reads as a smudge. The gear
@@ -1211,6 +1277,8 @@ test('stored midnight and graphite settings migrate to dark plus an accent', () 
   assert.equal(normalizedPreferences({ theme: 'nonsense', accent: 'nonsense' }).accent, 'blue');
   // A real theme is untouched.
   assert.equal(normalizedPreferences({ theme: 'light' }).theme, 'light');
+  assert.equal(normalizedPreferences({ filter: 'post', groupBy: 'reply' }).filter, 'post');
+  assert.equal(normalizedPreferences({ filter: 'post', groupBy: 'none' }).filter, 'all');
 });
 
 function loadLayoutEngine() {
@@ -1365,7 +1433,7 @@ test('DOM-only UI state is lifted so unmounting cannot lose it', () => {
 
   // card() must render from that state, not just react to clicks.
   assert.match(source, /state\.activePlayers\.has\(item\.selectionKey\)/);
-  assert.match(source, /const expanded = state\.expandedKeys\.has\(item\.selectionKey\)/);
+  assert.match(source, /const expanded = state\.filter === 'post' \|\| state\.expandedKeys\.has\(item\.selectionKey\)/);
 
   // Clicks record it.
   assert.match(source, /state\.activePlayers\.add\(item\.selectionKey\)/);
@@ -2031,7 +2099,7 @@ test('folder expansion and its token flow are absent', () => {
   assert.doesNotMatch(source, /type: 'container'/);
   assert.doesNotMatch(source, /data-filter="container"/);
   assert.match(source, /const isMediaItem = item => item\?\.type === 'image' \|\| item\?\.type === 'video' \|\| item\?\.type === 'embed'/);
-  assert.equal((source.match(/\['all', 'image', 'video', 'link', 'text'\]/g) || []).length, 2);
+  assert.equal((source.match(/\['all', 'image', 'video', 'link', 'text', 'post'\]/g) || []).length, 2);
 });
 
 test('direct host-file identities retain pre-1.0 selections and history', () => {

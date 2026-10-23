@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimpCity Thread Gallery Timeline
 // @namespace    local.simpcity.gallery.timeline
-// @version      1.0.2
+// @version      1.1.0
 // @description  Timeline fork of SimpCity Thread Gallery: cached thread indexes, virtualized browsing and verified downloads.
 // @license      MIT
 // @match        https://simpcity.cr/threads/*
@@ -22,7 +22,7 @@
   // The architecture is unchanged from the stable line; this fork reduces
   // rendering work and adds safer scanning, reply-level grouping and selection.
 
-  const APP_VERSION = '1.0.2';
+  const APP_VERSION = '1.1.0';
   const APP_ID = 'sc-thread-gallery-tl';
   const SETTINGS_KEY = 'sc-thread-gallery-timeline-settings-v1';
   const DOWNLOAD_HISTORY_KEY = 'sc-thread-gallery-timeline-download-history-v1';
@@ -110,7 +110,7 @@
     .join('');
   const VIEW_PAGE_SIZES = Object.freeze([40, 60, 100, 200, 300, 500, 0]);
   const viewPageSizeLabel = size => (Number(size) > 0 ? String(size) : 'All');
-  const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text' });
+  const FILTER_LABELS = Object.freeze({ all: 'All', image: 'Images', video: 'Videos', link: 'Links', text: 'Text', post: 'Posts' });
   // The gallery already knows what has been downloaded and paints a badge for
   // it. On a second visit to a long thread that badge is the wrong shape of
   // answer: what you want is the set that still needs doing.
@@ -337,7 +337,8 @@
 
   const state = {
     items: [],
-    filter: ['all', 'image', 'video', 'link', 'text'].includes(savedSettings.filter) ? savedSettings.filter : 'all',
+    filter: ['all', 'image', 'video', 'link', 'text', 'post'].includes(savedSettings.filter)
+      && (savedSettings.filter !== 'post' || savedSettings.groupBy === 'reply') ? savedSettings.filter : 'all',
     downloadState: DOWNLOAD_STATES.includes(savedSettings.downloadState) ? savedSettings.downloadState : 'all',
     resolutionFilter: RESOLUTION_FILTERS.includes(savedSettings.resolutionFilter) ? savedSettings.resolutionFilter : 'all',
     query: '',
@@ -1209,6 +1210,7 @@
     app.dataset.theme = state.theme;
     app.dataset.accent = state.accent;
     app.dataset.layout = state.layoutMode;
+    app.querySelectorAll('[data-filter="post"]').forEach(button => { button.hidden = state.groupBy !== 'reply'; });
     const cardScale = Math.min(160, Math.max(70, Number(state.cardScale) || 100));
     const scale = cardScale / 100;
     app.style.setProperty('--scg-masonry-width', `${Math.round(280 * scale)}px`);
@@ -1355,6 +1357,10 @@
   function commitState(patch, options = {}) {
     const changes = typeof patch === 'function' ? patch(state) : patch;
     if (changes && typeof changes === 'object') Object.assign(state, changes);
+    if (state.filter === 'post' && state.groupBy !== 'reply') {
+      state.filter = 'all';
+      state.viewPage = 1;
+    }
     if (options.persist) persistSettings();
     if (options.shellOnly) {
       applyShellState();
@@ -2449,7 +2455,8 @@
 
   function normalizedPreferences(input = {}) {
     return {
-      filter: ['all', 'image', 'video', 'link', 'text'].includes(input.filter) ? input.filter : DEFAULT_SETTINGS.filter,
+      filter: ['all', 'image', 'video', 'link', 'text', 'post'].includes(input.filter)
+        && (input.filter !== 'post' || input.groupBy === 'reply') ? input.filter : DEFAULT_SETTINGS.filter,
       downloadState: DOWNLOAD_STATES.includes(input.downloadState) ? input.downloadState : DEFAULT_SETTINGS.downloadState,
       resolutionFilter: RESOLUTION_FILTERS.includes(input.resolutionFilter) ? input.resolutionFilter : DEFAULT_SETTINGS.resolutionFilter,
       compact: Boolean(input.compact),
@@ -3657,6 +3664,7 @@
       else if (i.type === 'link') c.link++;
       else if (i.type === 'text') c.text++;
     });
+    c.post = new Set(state.items.map(replyKey)).size;
     countsCache = { revision: datasetRevision, value: c };
     return c;
   }
@@ -3724,6 +3732,7 @@
     else if (state.sort === 'resolution-asc') filtered.sort((a, b) => resolutionPixels(a) - resolutionPixels(b) || thread(a, b));
     else if (state.sort === 'resolution-desc') filtered.sort((a, b) => resolutionPixels(b) - resolutionPixels(a) || thread(a, b));
     else filtered.sort(thread);
+    const ordered = state.filter === 'post' ? orderPostItems(filtered) : filtered;
     visibleItemsCache = {
       dataset: datasetRevision,
       selection: selectionRevision,
@@ -3737,13 +3746,25 @@
       authorFilter: state.authorFilter,
       hostFilter: state.hostFilter,
       selectedOnly: state.selectedOnly,
-      items: filtered,
+      items: ordered,
     };
-    return filtered;
+    return ordered;
   }
 
   function replyKey(item) {
     return `${item.pageNumber || 1}|${item.postId || item.postUrl || item.postIndex || 0}`;
+  }
+
+  function orderPostItems(items) {
+    const typeOrder = { text: 0, link: 1, image: 2, video: 3, embed: 3 };
+    const groups = new Map();
+    items.forEach(item => {
+      const key = replyKey(item);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    });
+    return [...groups.values()].flatMap(entries => entries.sort((a, b) =>
+      (typeOrder[a.type] ?? 4) - (typeOrder[b.type] ?? 4) || Number(a.mediaIndex || 0) - Number(b.mediaIndex || 0)));
   }
 
   function setReplyCollapsed(key, collapsed) {
@@ -3774,7 +3795,7 @@
   // predicate a second time, which is what the facet counts used to do.
   function filterParts(item, q = normalizedQuery()) {
     return {
-      type: !state.filter || state.filter === 'all' || item.type === state.filter ||
+      type: !state.filter || state.filter === 'all' || (state.filter === 'post' && state.groupBy === 'reply') || item.type === state.filter ||
         (state.filter === 'video' && item.type === 'embed'),
       author: !state.authorFilter || state.authorFilter === 'all' || item.author === state.authorFilter,
       host: !state.hostFilter || state.hostFilter === 'all' || itemSourceHost(item) === state.hostFilter,
@@ -3858,7 +3879,9 @@
     });
     const units = [];
     grouped.forEach(groupItems => {
-      for (let index = 0; index < groupItems.length; index += limit) units.push(groupItems.slice(index, index + limit));
+      // Posts keep the whole reply together, even when it exceeds the item budget.
+      if (state.filter === 'post') units.push(groupItems);
+      else for (let index = 0; index < groupItems.length; index += limit) units.push(groupItems.slice(index, index + limit));
     });
     const pages = [];
     let current = [];
@@ -4094,8 +4117,8 @@
     if (item.type === 'link') {
       return `<article class="scg-card scg-linkcard" tabindex="-1" data-key="${key}">${badge}<a class="scg-host" href="${escapeHtml(item.url)}" target="_blank" rel="noopener"><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(hostOf(item.url))}</small></a>${meta}</article>`;
     }
-    const expanded = state.expandedKeys.has(item.selectionKey);
-    const expand = item.text.length > 360
+    const expanded = state.filter === 'post' || state.expandedKeys.has(item.selectionKey);
+    const expand = state.filter !== 'post' && item.text.length > 360
       ? `<button class="scg-expand ${expanded ? 'expanded' : ''}" data-expand="${key}">${iconWell('chevron')}<span>${expanded ? 'Show less' : 'Show more'}</span></button>`
       : '';
     return `<article class="scg-card scg-textcard" tabindex="-1" data-key="${key}">${badge}<p class="${expanded ? 'expanded' : ''}">${escapeHtml(item.text)}</p>${expand}${meta}</article>`;
@@ -4310,6 +4333,15 @@
     });
   }
 
+  function postContentMarkup(items) {
+    return ['text', 'link', 'image', 'video'].map(type => {
+      const entries = items.filter(item => item.type === type || (type === 'video' && item.type === 'embed'));
+      if (!entries.length) return '';
+      entries.sort((a, b) => Number(a.mediaIndex || 0) - Number(b.mediaIndex || 0));
+      return `<section class="scg-post-section" data-post-type="${type}"><h3>${escapeHtml(FILTER_LABELS[type])} <span>${entries.length}</span></h3><div class="scg-post-items">${entries.map(item => card(item)).join('')}</div></section>`;
+    }).join('');
+  }
+
   function replyGroupsMarkup(items) {
     const groups = new Map();
     items.forEach((item, index) => {
@@ -4327,7 +4359,11 @@
         ? `<label class="scg-reply-select">${iconWell('select')}<input type="checkbox" data-reply-select="${escapeHtml(key)}" ${replySelection.checked ? 'checked' : ''} aria-label="Select all downloadable media in ${escapeHtml(replyLabel)}"><span>Select reply</span></label>`
         : '';
       const itemCount = `${group.entries.length} item${group.entries.length === 1 ? '' : 's'}`;
-      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header><button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}</button>${replySelect}<div class="scg-reply-identity"><b>${escapeHtml(replyLabel)}</b><span>Page ${Number(first.pageNumber || 1)}</span><span>${escapeHtml(first.author || 'Unknown')}</span><span>${itemCount}</span><span data-reply-selection-count>${replySelectionSummary(replySelection)}</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Reply</span></a></header><div class="scg-group-grid">${collapsed ? '' : group.entries.map(entry => card(entry.item)).join('')}</div></section>`;
+      const postView = state.filter === 'post';
+      const content = collapsed ? '' : postView
+        ? postContentMarkup(group.entries.map(entry => entry.item))
+        : group.entries.map(entry => card(entry.item)).join('');
+      return `<section class="scg-reply-group ${collapsed ? 'collapsed' : ''}" data-reply-key="${escapeHtml(key)}"><header><button class="scg-reply-toggle" data-reply-toggle="${escapeHtml(key)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(toggleLabel)}">${iconWell('chevron')}</button>${replySelect}<div class="scg-reply-identity"><b>${escapeHtml(replyLabel)}</b><span>Page ${Number(first.pageNumber || 1)}</span><span>${escapeHtml(first.author || 'Unknown')}</span><span>${itemCount}</span><span data-reply-selection-count>${replySelectionSummary(replySelection)}</span><em class="scg-collapsed-status">${collapsed ? 'Collapsed' : ''}</em></div><a href="${escapeHtml(first.postUrl)}" target="_blank" rel="noopener">${icon('external')}<span>Reply</span></a></header><div class="scg-group-grid ${postView ? 'scg-post-content' : ''}">${content}</div></section>`;
     }).join('');
   }
 
@@ -4883,7 +4919,8 @@
       const total = c[key] ?? 0;
       btn.querySelector('span').textContent = total;
       const name = btn.querySelector('b')?.textContent || key;
-      btn.setAttribute('aria-label', `${name}, ${total} item${total === 1 ? '' : 's'}`);
+      const unit = key === 'post' ? 'post' : 'item';
+      btn.setAttribute('aria-label', `${name}, ${total} ${unit}${total === 1 ? '' : 's'}`);
     });
     refreshFilterControls();
     const matched = state.scanning ? [] : visibleItems();
@@ -5894,7 +5931,7 @@
       color:var(--scg-text);
       font:400 13px/1.45 ui-sans-serif,system-ui,sans-serif;
     }
-    #${APP_ID}.open{display:grid;grid-template-rows:auto minmax(0,1fr)}
+    #${APP_ID}.open{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
 
     /* ---- Glass: one recipe, tuned per surface ------------------ */
     #${APP_ID} .scg-glass{
@@ -6132,6 +6169,7 @@
       transition:background .14s,color .14s;
     }
     #${APP_ID} .scg-filters button .scg-icon{width:15px;height:15px}
+    #${APP_ID} .scg-filters button[hidden]{display:none}
     #${APP_ID} .scg-filters button b{font-weight:550;font-size:var(--scg-fs-sm)}
     #${APP_ID} .scg-filters button>span{
       min-width:20px;padding:2px 6px;border-radius:99px;
@@ -6697,6 +6735,26 @@
     }
     #${APP_ID} .scg-reply-group>header a:hover{background:var(--scg-accent-soft)}
     #${APP_ID} .scg-reply-group>header a .scg-icon{width:14px;height:14px}
+
+    /* A post reads from top to bottom, independently of the media layout. */
+    #${APP_ID}[data-layout] .scg-reply-group .scg-group-grid.scg-post-content{display:block;columns:auto}
+    #${APP_ID} .scg-post-section{margin:0 0 var(--scg-s-4)}
+    #${APP_ID} .scg-post-section>h3{
+      display:flex;align-items:center;gap:8px;margin:0 0 10px;
+      color:var(--scg-muted);font-size:var(--scg-fs-sm);font-weight:600;
+    }
+    #${APP_ID} .scg-post-section>h3>span{font-weight:400}
+    #${APP_ID} .scg-post-items{
+      display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--scg-group-width,250px)),1fr));
+      align-items:start;gap:12px;
+    }
+    #${APP_ID}.compact .scg-post-items{grid-template-columns:repeat(auto-fill,minmax(min(100%,var(--scg-group-compact-width,180px)),1fr));gap:9px}
+    #${APP_ID} .scg-post-section[data-post-type="text"] .scg-post-items{display:block}
+    #${APP_ID} .scg-post-content .scg-card{margin:0}
+    #${APP_ID}[data-layout] .scg-reply-group .scg-post-content .scg-textcard,
+    #${APP_ID}[data-layout] .scg-reply-group .scg-post-content .scg-linkcard{height:auto;contain-intrinsic-size:auto;content-visibility:visible}
+    #${APP_ID}[data-layout] .scg-post-content .scg-textcard p{display:block;-webkit-line-clamp:unset}
+    #${APP_ID}[data-layout] .scg-post-content .scg-host{min-height:0;flex:none}
 
 
     /* ---- 13. The dock (status / selection / downloads) --------- */
@@ -7479,7 +7537,7 @@
       #${APP_ID} .scg-active-facets{padding:0 8px 8px;flex-wrap:nowrap;overflow-x:auto}
       #${APP_ID} .scg-facet-chip{flex:none;max-width:56vw}
       #${APP_ID} .scg-filters{width:100%}
-      #${APP_ID} .scg-filters button{flex:1;justify-content:center;padding:6px 8px}
+      #${APP_ID} .scg-filters button{flex:1;justify-content:center;gap:4px;padding:6px 4px}
       #${APP_ID} .scg-filters button b{display:none}
       #${APP_ID} .scg-viewbar{flex-wrap:wrap;gap:8px}
       #${APP_ID} .scg-view-summary{flex-basis:100%;margin:0}
@@ -7684,6 +7742,7 @@
           <button data-filter="video" aria-pressed="false">${icon('video')}<b>Videos</b><span aria-hidden="true">0</span></button>
           <button data-filter="link" aria-pressed="false">${icon('link')}<b>Links</b><span aria-hidden="true">0</span></button>
           <button data-filter="text" aria-pressed="false">${icon('text')}<b>Text</b><span aria-hidden="true">0</span></button>
+          <button data-filter="post" aria-pressed="false" hidden>${icon('page')}<b>Posts</b><span aria-hidden="true">0</span></button>
         </div>
         <div class="scg-viewbar">
           <span class="scg-view-summary" role="status" aria-live="polite">0 matched</span>

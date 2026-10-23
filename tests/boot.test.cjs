@@ -93,8 +93,10 @@ function makeDom() {
       closest: () => null,
       // Every selector resolves, so the wiring block can attach handlers. A
       // null here would only prove that this harness is thin.
-      querySelector: () => makeNode(),
-      querySelectorAll: () => [],
+      querySelector: selector => selector === '[data-group-by]'
+        ? (node.groupControl ||= makeNode('select')) : makeNode(),
+      querySelectorAll: selector => selector === '[data-filter="post"]'
+        ? [node.postTab ||= makeNode('button')] : [],
       getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0 }),
     };
     return node;
@@ -121,9 +123,10 @@ function makeDom() {
   return { document, byId, makeNode };
 }
 
-function boot() {
+function boot(savedSettings = {}) {
   const { document, byId } = makeDom();
   const store = new Map();
+  store.set('sc-thread-gallery-timeline-settings-v1', JSON.stringify(savedSettings));
   const localStorage = {
     getItem: key => (store.has(key) ? store.get(key) : null),
     setItem: (key, value) => store.set(key, String(value)),
@@ -187,4 +190,21 @@ test('opening the gallery runs the render path end to end', () => {
   // Everything the unit tests cover is a slice of a pure function. render() is
   // where those slices are actually wired together, and it has no other cover.
   assert.doesNotThrow(() => launcher.onclick());
+});
+
+test('the Posts tab is visible only while Group by reply is enabled', () => {
+  const byId = boot();
+  const app = byId.get('sc-thread-gallery-tl');
+  const postTab = app.querySelectorAll('[data-filter="post"]')[0];
+  assert.equal(postTab.hidden, true);
+  byId.get('scg-tl-launch').onclick();
+  const group = app.querySelector('[data-group-by]');
+  group.onchange({ target: { value: 'reply' } });
+  assert.equal(postTab.hidden, false);
+  group.onchange({ target: { value: 'none' } });
+  assert.equal(postTab.hidden, true);
+
+  const restored = boot({ groupBy: 'reply', filter: 'post' });
+  assert.equal(restored.get('sc-thread-gallery-tl').querySelectorAll('[data-filter="post"]')[0].hidden, false);
+  assert.doesNotThrow(() => restored.get('scg-tl-launch').onclick());
 });
